@@ -1,0 +1,4 @@
+{
+    "python.defaultInterpreterPath": "/home/vscode/.venvs/blank-app-template/bin/python",
+    "python-envs.defaultEnvManager": "ms-python.python:system"
+}

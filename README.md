@@ -1,25 +1,12 @@
-# 🎈 Blank app template
+# HexSphere Studio
 
-A simple Streamlit app template for you to modify!
+An interactive Streamlit tool for shaping, rotating, animating, and exporting a faceted hex sphere.
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://blank-app-template.streamlit.app/)
+## Run locally
 
-### How to run it on your own machine
+Install `uv`, sync the dependencies, and start the app:
 
-Prerequisite: install `uv` if you don't already have it.
-
+```bash
+uv sync
+uv run streamlit run streamlit_app.py
 ```
-$ curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-1. Sync the dependencies
-
-   ```
-   $ uv sync
-   ```
-
-2. Run the app
-
-   ```
-   $ uv run streamlit run streamlit_app.py
-   ```
