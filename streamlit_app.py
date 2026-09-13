@@ -7,31 +7,13 @@ import streamlit as st
 
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
 
-DEFAULTS = {
-    "active_object": "Hex Sphere", "radius": 5.0, "cube_size": 8.0,
-    "tube_cylinder": False, "tube_sides": 8, "tube_length": 16.0,
-    "tube_inner_radius": 4.0, "tube_top_inner_radius": 4.0, "tube_bottom_inner_radius": 4.0,
-    "tube_thickness": 2.0, "tube_top_angle": 0, "tube_bottom_angle": 0,
-    "tube_twist": 5, "tube_stack_thickness": 1.0,
-    "torus_inner_radius": 4.0, "torus_outer_radius": 6.0, "torus_hollow_percent": 50.0,
-    "torus_xy_ratio": 1.0, "torus_start_angle": 0.0, "torus_sweep": 360.0,
-    "torus_cylinder": False, "torus_sides": 8, "thickness": 3,
-    "rotation_xy": 20, "rotation_yz": 25, "rotation_zx": 0,
-    "xy_resolution": 18, "yz_resolution": 18, "zx_resolution": 24,
-    "attach_vis_controls": False,
-    "vis_scale": 1.0,
-    "vis_color": "#F4B942",
-    "vis_alpha": 0.94,
-    "vis_show_grid": False,
-    "vis_flatshading": True,
-}
 
-for key, value in DEFAULTS.items():
-    st.session_state.setdefault(key, value)
-
-
-def generate_obj_text(vertices, faces):
+def generate_obj_text(vertices, faces, object_name=None, params=None):
     lines = ["# HexSphere Studio model"]
+    if object_name:
+        lines.append(f"# object_type: {object_name}")
+    if params:
+        lines.append(f"# metadata: {json.dumps(params)}")
     for x, y, z in vertices:
         lines.append(f"v {x} {y} {z}")
     for a, b, c in faces:
@@ -151,45 +133,213 @@ def build_plotly_figure(
     return fig
 
 
-def build_hex_sphere(radius, xy_resolution, yz_resolution, zx_resolution):
-    latitude_count = max(6, int(xy_resolution))
-    longitude_count = max(12, int((yz_resolution + zx_resolution) / 2) * 2)
-    vertices = [(0.0, 0.0, radius)]
-    for latitude_index in range(1, latitude_count):
-        latitude = math.pi * latitude_index / latitude_count
-        ring_radius = radius * math.sin(latitude)
-        height = radius * math.cos(latitude)
-        offset = math.pi / longitude_count if latitude_index % 2 else 0
-        for longitude_index in range(longitude_count):
-            longitude = 2 * math.pi * longitude_index / longitude_count + offset
-            vertices.append((ring_radius * math.cos(longitude), ring_radius * math.sin(longitude), height))
-    south_pole = len(vertices)
-    vertices.append((0.0, 0.0, -radius))
-    faces = []
-    for longitude_index in range(longitude_count):
-        next_longitude = (longitude_index + 1) % longitude_count
-        faces.append((0, longitude_index + 1, next_longitude + 1))
-    for latitude_index in range(latitude_count - 2):
-        upper_start = 1 + latitude_index * longitude_count
-        lower_start = upper_start + longitude_count
-        for longitude_index in range(longitude_count):
-            next_longitude = (longitude_index + 1) % longitude_count
-            faces.extend(((upper_start + longitude_index, lower_start + longitude_index, lower_start + next_longitude), (upper_start + longitude_index, lower_start + next_longitude, upper_start + next_longitude)))
-    last_ring = 1 + (latitude_count - 2) * longitude_count
-    for longitude_index in range(longitude_count):
-        faces.append((last_ring + longitude_index, south_pole, last_ring + (longitude_index + 1) % longitude_count))
-    return vertices, faces, mesh_edges(vertices, latitude_count, longitude_count)
+def build_hex_sphere(radius=5.0, hex_subdivisions=3, hex_size_pct=95.0, *args, **kwargs):
+    # Backward compatibility with legacy (radius, xy_res, yz_res, zx_res) calls
+    if len(args) >= 1 and isinstance(args[0], (int, float)):
+        hex_subdivisions = max(1, min(8, round(float(args[0]) / 6.0)))
+    return build_advanced_hex_sphere(
+        radius=radius,
+        hex_subdivisions=hex_subdivisions,
+        hex_size_pct=hex_size_pct,
+        wall_angle=0.0,
+        wall_height=0.0,
+        wall_radius=100.0,
+    )
 
 
-def mesh_edges(vertices, latitude_count, longitude_count):
-    edges = []
-    for latitude_index in range(latitude_count - 1):
-        start = 1 + latitude_index * longitude_count
-        for longitude_index in range(longitude_count):
-            edges.append((start + longitude_index, start + (longitude_index + 1) % longitude_count))
-            if latitude_index < latitude_count - 2:
-                edges.append((start + longitude_index, start + longitude_count + longitude_index))
-    return edges
+def build_advanced_hex_sphere(
+    radius=5.0,
+    hex_subdivisions=3,
+    hex_size_pct=95.0,
+    wall_angle=0.0,
+    wall_height=0.0,
+    wall_radius=100.0,
+):
+    phi = (1.0 + math.sqrt(5.0)) / 2.0
+    base_vertices = [
+        (-1, phi, 0), (1, phi, 0), (-1, -phi, 0), (1, -phi, 0),
+        (0, -1, phi), (0, 1, phi), (0, -1, -phi), (0, 1, -phi),
+        (phi, 0, -1), (phi, 0, 1), (-phi, 0, -1), (-phi, 0, 1),
+    ]
+
+    def normalize(v):
+        l = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+        return (v[0] / l, v[1] / l, v[2] / l) if l > 0 else (0.0, 0.0, 1.0)
+
+    base_vertices = [normalize(v) for v in base_vertices]
+    base_triangles = [
+        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+    ]
+
+    point_map = {}
+
+    def get_subdivided_vertex(p1, p2, p3, i, j, k, n):
+        x = (i * p1[0] + j * p2[0] + k * p3[0]) / n
+        y = (i * p1[1] + j * p2[1] + k * p3[1]) / n
+        z = (i * p1[2] + j * p2[2] + k * p3[2]) / n
+        norm = normalize((x, y, z))
+        key = (round(norm[0], 6), round(norm[1], 6), round(norm[2], 6))
+        if key not in point_map:
+            point_map[key] = len(point_map)
+        return point_map[key], norm
+
+    triangles = []
+    points = []
+    n = max(1, min(8, int(hex_subdivisions)))
+    for t in base_triangles:
+        p1, p2, p3 = base_vertices[t[0]], base_vertices[t[1]], base_vertices[t[2]]
+        grid = {}
+        for i in range(n + 1):
+            for j in range(n + 1 - i):
+                k = n - i - j
+                idx, pt = get_subdivided_vertex(p1, p2, p3, i, j, k, n)
+                grid[(i, j)] = idx
+                while len(points) <= idx:
+                    points.append(pt)
+        for i in range(n):
+            for j in range(n - i):
+                triangles.append((grid[(i, j)], grid[(i + 1, j)], grid[(i, j + 1)]))
+                if i + j < n - 1:
+                    triangles.append((grid[(i + 1, j)], grid[(i + 1, j + 1)], grid[(i, j + 1)]))
+
+    vert_to_tri = [[] for _ in range(len(points))]
+    for t_idx, tri in enumerate(triangles):
+        for v in tri:
+            vert_to_tri[v].append(t_idx)
+
+    tri_centroids = []
+    for tri in triangles:
+        p0, p1, p2 = points[tri[0]], points[tri[1]], points[tri[2]]
+        c = normalize(((p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3))
+        tri_centroids.append(c)
+
+    scale_factor = max(0.1, min(1.0, float(hex_size_pct) / 100.0))
+    wall_rad_factor = max(0.1, min(1.0, float(wall_radius) / 100.0))
+    h = radius * (float(wall_height) / 100.0)
+    top_scale = max(0.0, min(1.0, math.sin(math.radians(float(wall_angle)))))
+
+    final_vertices = []
+    final_faces = []
+    final_edges = []
+
+    for v_idx, v_center in enumerate(points):
+        adj_tris = vert_to_tri[v_idx]
+        if not adj_tris:
+            continue
+        normal = v_center
+        up = (0.0, 1.0, 0.0) if abs(normal[1]) < 0.9 else (1.0, 0.0, 0.0)
+        ux = up[1] * normal[2] - up[2] * normal[1]
+        uy = up[2] * normal[0] - up[0] * normal[2]
+        uz = up[0] * normal[1] - up[1] * normal[0]
+        l = math.sqrt(ux * ux + uy * uy + uz * uz)
+        u = (ux / l, uy / l, uz / l)
+        vx = normal[1] * u[2] - normal[2] * u[1]
+        vy = normal[2] * u[0] - normal[0] * u[2]
+        vz = normal[0] * u[1] - normal[1] * u[0]
+        v = (vx, vy, vz)
+
+        corners = []
+        for t_idx in adj_tris:
+            c = tri_centroids[t_idx]
+            dx = c[0] - v_center[0]
+            dy = c[1] - v_center[1]
+            dz = c[2] - v_center[2]
+            pu = dx * u[0] + dy * u[1] + dz * u[2]
+            pv = dx * v[0] + dy * v[1] + dz * v[2]
+            angle = math.atan2(pv, pu)
+            corners.append((angle, c))
+        corners.sort(key=lambda x: x[0])
+        m = len(corners)
+
+        outer_indices = []
+        for _, c in corners:
+            sx = v_center[0] + (c[0] - v_center[0]) * scale_factor
+            sy = v_center[1] + (c[1] - v_center[1]) * scale_factor
+            sz = v_center[2] + (c[2] - v_center[2]) * scale_factor
+            sp = normalize((sx, sy, sz))
+            idx = len(final_vertices)
+            final_vertices.append((sp[0] * radius, sp[1] * radius, sp[2] * radius))
+            outer_indices.append(idx)
+
+        for k in range(m):
+            final_edges.append((outer_indices[k], outer_indices[(k + 1) % m]))
+
+        has_collar = wall_rad_factor < 0.999
+        if has_collar:
+            inner_base_indices = []
+            inner_factor = scale_factor * wall_rad_factor
+            for _, c in corners:
+                sx = v_center[0] + (c[0] - v_center[0]) * inner_factor
+                sy = v_center[1] + (c[1] - v_center[1]) * inner_factor
+                sz = v_center[2] + (c[2] - v_center[2]) * inner_factor
+                sp = normalize((sx, sy, sz))
+                idx = len(final_vertices)
+                final_vertices.append((sp[0] * radius, sp[1] * radius, sp[2] * radius))
+                inner_base_indices.append(idx)
+
+            for k in range(m):
+                nxt = (k + 1) % m
+                o_curr, o_nxt = outer_indices[k], outer_indices[nxt]
+                i_curr, i_nxt = inner_base_indices[k], inner_base_indices[nxt]
+                final_faces.extend(((o_curr, o_nxt, i_nxt), (o_curr, i_nxt, i_curr)))
+                final_edges.append((i_curr, i_nxt))
+            wall_base_indices = inner_base_indices
+        else:
+            wall_base_indices = outer_indices
+
+        is_flat = math.isclose(h, 0.0, abs_tol=1e-5)
+        if is_flat and math.isclose(top_scale, 0.0, abs_tol=1e-5):
+            for k in range(1, m - 1):
+                final_faces.append((wall_base_indices[0], wall_base_indices[k], wall_base_indices[k + 1]))
+        elif top_scale <= 0.01:
+            apex_pos = (
+                v_center[0] * (radius + h),
+                v_center[1] * (radius + h),
+                v_center[2] * (radius + h),
+            )
+            apex_idx = len(final_vertices)
+            final_vertices.append(apex_pos)
+            for k in range(m):
+                nxt = (k + 1) % m
+                b_curr, b_nxt = wall_base_indices[k], wall_base_indices[nxt]
+                if h >= 0:
+                    final_faces.append((b_curr, b_nxt, apex_idx))
+                else:
+                    final_faces.append((b_curr, apex_idx, b_nxt))
+                final_edges.append((b_curr, apex_idx))
+        else:
+            top_indices = []
+            inner_factor = scale_factor * wall_rad_factor
+            for _, c in corners:
+                sx = v_center[0] + (c[0] - v_center[0]) * (inner_factor * top_scale)
+                sy = v_center[1] + (c[1] - v_center[1]) * (inner_factor * top_scale)
+                sz = v_center[2] + (c[2] - v_center[2]) * (inner_factor * top_scale)
+                sp = normalize((sx, sy, sz))
+                idx = len(final_vertices)
+                final_vertices.append((sp[0] * (radius + h), sp[1] * (radius + h), sp[2] * (radius + h)))
+                top_indices.append(idx)
+
+            for k in range(m):
+                nxt = (k + 1) % m
+                b_curr, b_nxt = wall_base_indices[k], wall_base_indices[nxt]
+                t_curr, t_nxt = top_indices[k], top_indices[nxt]
+                if h >= 0:
+                    final_faces.extend(((b_curr, b_nxt, t_nxt), (b_curr, t_nxt, t_curr)))
+                else:
+                    final_faces.extend(((b_curr, t_nxt, b_nxt), (b_curr, t_curr, t_nxt)))
+                final_edges.append((t_curr, t_nxt))
+                final_edges.append((b_curr, t_curr))
+
+            for k in range(1, m - 1):
+                if h >= 0:
+                    final_faces.append((top_indices[0], top_indices[k], top_indices[k + 1]))
+                else:
+                    final_faces.append((top_indices[0], top_indices[k + 1], top_indices[k]))
+
+    return final_vertices, final_faces, final_edges
 
 
 def build_cube(size):
@@ -302,81 +452,775 @@ def build_simple_torus(inner_radius, outer_radius, hollow_percent, xy_ratio, sta
     return vertices, faces, edges
 
 
-def set_advanced_tube_preset(preset):
-    if preset == "tube":
-        st.session_state.tube_bottom_inner_radius = st.session_state.tube_top_inner_radius
-    elif preset == "cone":
-        st.session_state.tube_bottom_inner_radius = 0.0
-    elif preset == "flip":
-        st.session_state.tube_top_inner_radius, st.session_state.tube_bottom_inner_radius = st.session_state.tube_bottom_inner_radius, st.session_state.tube_top_inner_radius
-        st.session_state.tube_top_angle, st.session_state.tube_bottom_angle = st.session_state.tube_bottom_angle, st.session_state.tube_top_angle
+OBJECT_REGISTRY = {
+    "Hex Sphere": {
+        "label": "Hex sphere",
+        "generator": lambda s: build_hex_sphere(
+            s["radius"],
+            s["hex_subdivisions"],
+            s["hex_size_pct"],
+        ),
+        "params": {
+            "radius": {
+                "label": "Sphere radius",
+                "type": "slider",
+                "min": 1.0,
+                "max": 12.0,
+                "default": 5.0,
+                "step": 0.5,
+            },
+            "hex_subdivisions": {
+                "label": "Hexagon density (subdivisions)",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+            "hex_size_pct": {
+                "label": "Hexagon size percentage",
+                "type": "slider",
+                "min": 10.0,
+                "max": 100.0,
+                "default": 95.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "thickness": {
+                "label": "Grid thickness",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "thickness": 3,
+            },
+            "Preset2": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "thickness": 3,
+            },
+        },
+    },
+    "AdvancedHexSphere": {
+        "label": "AdvancedHexSphere",
+        "generator": lambda s: build_advanced_hex_sphere(
+            s["radius"],
+            s["hex_subdivisions"],
+            s["hex_size_pct"],
+            s["wall_angle"],
+            s["wall_height"],
+            s["wall_radius"],
+        ),
+        "params": {
+            "radius": {
+                "label": "Sphere radius",
+                "type": "slider",
+                "min": 1.0,
+                "max": 12.0,
+                "default": 5.0,
+                "step": 0.5,
+            },
+            "hex_subdivisions": {
+                "label": "Hexagon density (subdivisions)",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+            "hex_size_pct": {
+                "label": "Hexagon size percentage",
+                "type": "slider",
+                "min": 10.0,
+                "max": 100.0,
+                "default": 95.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "wall_angle": {
+                "label": "Wall angle",
+                "type": "slider",
+                "min": 0,
+                "max": 90,
+                "default": 0,
+                "step": 1,
+            },
+            "wall_height": {
+                "label": "Wall height",
+                "type": "slider",
+                "min": -100.0,
+                "max": 100.0,
+                "default": 0.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "wall_radius": {
+                "label": "Wall radius",
+                "type": "slider",
+                "min": 50.0,
+                "max": 100.0,
+                "default": 100.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "thickness": {
+                "label": "Grid thickness",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "wall_angle": 0,
+                "wall_height": 0.0,
+                "wall_radius": 100.0,
+                "thickness": 3,
+            },
+            "Preset2": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "wall_angle": 0,
+                "wall_height": 0.0,
+                "wall_radius": 100.0,
+                "thickness": 3,
+            },
+        },
+    },
+    "Cube": {
+        "label": "Cube",
+        "generator": lambda s: build_cube(s["cube_size"]),
+        "params": {
+            "cube_size": {
+                "label": "Size",
+                "type": "slider",
+                "min": 1.0,
+                "max": 16.0,
+                "default": 8.0,
+                "step": 0.5,
+            },
+            "thickness": {
+                "label": "Grid thickness",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "cube_size": 8.0,
+                "thickness": 3,
+            },
+            "Preset2": {
+                "cube_size": 8.0,
+                "thickness": 3,
+            },
+        },
+    },
+    "Tube": {
+        "label": "Tube",
+        "generator": lambda s: build_tube(
+            s["tube_length"],
+            s["tube_inner_radius"],
+            s["tube_thickness"],
+            s["tube_sides"],
+            s["tube_top_angle"],
+            s["tube_bottom_angle"],
+            s["tube_cylinder"],
+        ),
+        "params": {
+            "tube_cylinder": {
+                "label": "Cylinder type",
+                "type": "toggle",
+                "default": False,
+            },
+            "tube_sides": {
+                "label": "Sides",
+                "type": "slider",
+                "min": 3,
+                "max": 15,
+                "default": 8,
+                "step": 1,
+                "disabled_by": "tube_cylinder",
+            },
+            "tube_length": {
+                "label": "Length",
+                "type": "slider",
+                "min": 1.0,
+                "max": 20.0,
+                "default": 16.0,
+                "step": 0.5,
+            },
+            "tube_inner_radius": {
+                "label": "Inner radius",
+                "type": "slider",
+                "min": 0.5,
+                "max": 10.0,
+                "default": 4.0,
+                "step": 0.5,
+            },
+            "tube_thickness": {
+                "label": "Thickness",
+                "type": "slider",
+                "min": 0.5,
+                "max": 8.0,
+                "default": 2.0,
+                "step": 0.5,
+            },
+            "tube_top_angle": {
+                "label": "Top side angle",
+                "type": "slider",
+                "min": -60,
+                "max": 60,
+                "default": 0,
+                "step": 1,
+            },
+            "tube_bottom_angle": {
+                "label": "Bottom side angle",
+                "type": "slider",
+                "min": -60,
+                "max": 60,
+                "default": 0,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "tube_cylinder": False,
+                "tube_sides": 8,
+                "tube_length": 16.0,
+                "tube_inner_radius": 4.0,
+                "tube_thickness": 2.0,
+                "tube_top_angle": 0,
+                "tube_bottom_angle": 0,
+            },
+            "Preset2": {
+                "tube_cylinder": False,
+                "tube_sides": 8,
+                "tube_length": 16.0,
+                "tube_inner_radius": 4.0,
+                "tube_thickness": 2.0,
+                "tube_top_angle": 0,
+                "tube_bottom_angle": 0,
+            },
+        },
+    },
+    "AdvancedTube": {
+        "label": "AdvancedTube",
+        "generator": lambda s: build_advanced_tube(
+            s["tube_length"],
+            s["tube_top_inner_radius"],
+            s["tube_bottom_inner_radius"],
+            s["tube_thickness"],
+            s["tube_sides"],
+            s["tube_top_angle"],
+            s["tube_bottom_angle"],
+            s["tube_cylinder"],
+        ),
+        "params": {
+            "tube_cylinder": {
+                "label": "Cylinder type",
+                "type": "toggle",
+                "default": False,
+            },
+            "tube_sides": {
+                "label": "Sides",
+                "type": "slider",
+                "min": 3,
+                "max": 15,
+                "default": 8,
+                "step": 1,
+                "disabled_by": "tube_cylinder",
+            },
+            "tube_length": {
+                "label": "Length",
+                "type": "slider",
+                "min": 1.0,
+                "max": 20.0,
+                "default": 16.0,
+                "step": 0.5,
+            },
+            "tube_top_inner_radius": {
+                "label": "Top side inner radius",
+                "type": "slider",
+                "min": 0.0,
+                "max": 10.0,
+                "default": 4.0,
+                "step": 0.5,
+            },
+            "tube_bottom_inner_radius": {
+                "label": "Bottom side inner radius",
+                "type": "slider",
+                "min": 0.0,
+                "max": 10.0,
+                "default": 4.0,
+                "step": 0.5,
+            },
+            "tube_thickness": {
+                "label": "Thickness",
+                "type": "slider",
+                "min": 0.5,
+                "max": 8.0,
+                "default": 2.0,
+                "step": 0.5,
+            },
+            "tube_top_angle": {
+                "label": "Top side angle",
+                "type": "slider",
+                "min": -60,
+                "max": 60,
+                "default": 0,
+                "step": 1,
+            },
+            "tube_bottom_angle": {
+                "label": "Bottom side angle",
+                "type": "slider",
+                "min": -60,
+                "max": 60,
+                "default": 0,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "tube_cylinder": False,
+                "tube_sides": 8,
+                "tube_length": 16.0,
+                "tube_top_inner_radius": 4.0,
+                "tube_bottom_inner_radius": 4.0,
+                "tube_thickness": 2.0,
+                "tube_top_angle": 0,
+                "tube_bottom_angle": 0,
+            },
+            "Preset2": {
+                "tube_cylinder": False,
+                "tube_sides": 8,
+                "tube_length": 16.0,
+                "tube_top_inner_radius": 4.0,
+                "tube_bottom_inner_radius": 4.0,
+                "tube_thickness": 2.0,
+                "tube_top_angle": 0,
+                "tube_bottom_angle": 0,
+            },
+        },
+    },
+    "ComplexTube": {
+        "label": "ComplexTube",
+        "generator": lambda s: build_complex_tube(
+            s["tube_length"],
+            s["tube_top_inner_radius"],
+            s["tube_bottom_inner_radius"],
+            s["tube_thickness"],
+            s["tube_sides"],
+            s["tube_top_angle"],
+            s["tube_bottom_angle"],
+            s["tube_twist"],
+            s["tube_stack_thickness"],
+        ),
+        "params": {
+            "tube_sides": {
+                "label": "Sides",
+                "type": "slider",
+                "min": 3,
+                "max": 15,
+                "default": 8,
+                "step": 1,
+            },
+            "tube_length": {
+                "label": "Length",
+                "type": "slider",
+                "min": 1.0,
+                "max": 20.0,
+                "default": 16.0,
+                "step": 0.5,
+            },
+            "tube_top_inner_radius": {
+                "label": "Top side inner radius",
+                "type": "slider",
+                "min": 0.0,
+                "max": 10.0,
+                "default": 4.0,
+                "step": 0.5,
+            },
+            "tube_bottom_inner_radius": {
+                "label": "Bottom side inner radius",
+                "type": "slider",
+                "min": 0.0,
+                "max": 10.0,
+                "default": 4.0,
+                "step": 0.5,
+            },
+            "tube_thickness": {
+                "label": "Thickness",
+                "type": "slider",
+                "min": 0.5,
+                "max": 8.0,
+                "default": 2.0,
+                "step": 0.5,
+            },
+            "tube_top_angle": {
+                "label": "Top side angle",
+                "type": "slider",
+                "min": -60,
+                "max": 60,
+                "default": 0,
+                "step": 1,
+            },
+            "tube_bottom_angle": {
+                "label": "Bottom side angle",
+                "type": "slider",
+                "min": -60,
+                "max": 60,
+                "default": 0,
+                "step": 1,
+            },
+            "tube_twist": {
+                "label": "Twist per stack",
+                "type": "slider",
+                "min": -15,
+                "max": 15,
+                "default": 5,
+                "step": 1,
+            },
+            "tube_stack_thickness": {
+                "label": "Stack thickness",
+                "type": "slider",
+                "min": 1.0,
+                "max": 10.0,
+                "default": 1.0,
+                "step": 1.0,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "tube_sides": 8,
+                "tube_length": 16.0,
+                "tube_top_inner_radius": 4.0,
+                "tube_bottom_inner_radius": 4.0,
+                "tube_thickness": 2.0,
+                "tube_top_angle": 0,
+                "tube_bottom_angle": 0,
+                "tube_twist": 5,
+                "tube_stack_thickness": 1.0,
+            },
+            "Preset2": {
+                "tube_sides": 8,
+                "tube_length": 16.0,
+                "tube_top_inner_radius": 4.0,
+                "tube_bottom_inner_radius": 4.0,
+                "tube_thickness": 2.0,
+                "tube_top_angle": 0,
+                "tube_bottom_angle": 0,
+                "tube_twist": 5,
+                "tube_stack_thickness": 1.0,
+            },
+        },
+    },
+    "SimpleTorus": {
+        "label": "SimpleTorus",
+        "generator": lambda s: build_simple_torus(
+            s["torus_inner_radius"],
+            s["torus_outer_radius"],
+            s["torus_hollow_percent"],
+            s["torus_xy_ratio"],
+            s["torus_start_angle"],
+            s["torus_sweep"],
+            s["torus_sides"],
+            s["torus_cylinder"],
+        ),
+        "params": {
+            "torus_inner_radius": {
+                "label": "Inner radius",
+                "type": "slider",
+                "min": 0.5,
+                "max": 20.0,
+                "default": 4.0,
+                "step": 0.5,
+            },
+            "torus_outer_radius": {
+                "label": "Outer radius",
+                "type": "slider",
+                "min": 0.5,
+                "max": 30.0,
+                "default": 6.0,
+                "step": 0.5,
+            },
+            "torus_hollow_percent": {
+                "label": "Hollow from center",
+                "type": "slider",
+                "min": 0.0,
+                "max": 100.0,
+                "default": 50.0,
+                "step": 5.0,
+                "format": "%.0f%%",
+            },
+            "torus_xy_ratio": {
+                "label": "X/Y ratio",
+                "type": "slider",
+                "min": 0.1,
+                "max": 3.0,
+                "default": 1.0,
+                "step": 0.1,
+            },
+            "torus_start_angle": {
+                "label": "Start angle",
+                "type": "slider",
+                "min": -360.0,
+                "max": 360.0,
+                "default": 0.0,
+                "step": 1.0,
+            },
+            "torus_sweep": {
+                "label": "Sweep",
+                "type": "slider",
+                "min": 1.0,
+                "max": 360.0,
+                "default": 360.0,
+                "step": 1.0,
+            },
+            "torus_cylinder": {
+                "label": "Cylinder",
+                "type": "toggle",
+                "default": False,
+            },
+            "torus_sides": {
+                "label": "Polygon sides",
+                "type": "slider",
+                "min": 3,
+                "max": 15,
+                "default": 8,
+                "step": 1,
+                "disabled_by": "torus_cylinder",
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "torus_inner_radius": 4.0,
+                "torus_outer_radius": 6.0,
+                "torus_hollow_percent": 50.0,
+                "torus_xy_ratio": 1.0,
+                "torus_start_angle": 0.0,
+                "torus_sweep": 360.0,
+                "torus_cylinder": False,
+                "torus_sides": 8,
+            },
+            "Preset2": {
+                "torus_inner_radius": 4.0,
+                "torus_outer_radius": 6.0,
+                "torus_hollow_percent": 50.0,
+                "torus_xy_ratio": 1.0,
+                "torus_start_angle": 0.0,
+                "torus_sweep": 360.0,
+                "torus_cylinder": False,
+                "torus_sides": 8,
+            },
+        },
+    },
+}
 
+VIEWPORT_DEFAULTS = {
+    "rotation_xy": 20,
+    "rotation_yz": 25,
+    "rotation_zx": 0,
+    "attach_vis_controls": False,
+    "vis_auto_scale": True,
+    "vis_scale": 1.0,
+    "vis_color": "#F4B942",
+    "vis_alpha": 0.94,
+    "vis_show_grid": False,
+    "vis_flatshading": True,
+}
+
+DEFAULTS = {"active_object": "Hex Sphere"}
+for obj_meta in OBJECT_REGISTRY.values():
+    for p_key, p_cfg in obj_meta["params"].items():
+        DEFAULTS[p_key] = p_cfg["default"]
+DEFAULTS.update(VIEWPORT_DEFAULTS)
+
+for key, value in DEFAULTS.items():
+    st.session_state.setdefault(key, value)
+
+st.session_state.setdefault("save_user_presets", True)
+
+if "user_presets" not in st.session_state:
+    st.session_state.user_presets = {}
+
+for obj_name, obj_meta in OBJECT_REGISTRY.items():
+    if obj_name not in st.session_state.user_presets:
+        st.session_state.user_presets[obj_name] = {}
+    for user_btn in ("User1", "User2", "User3"):
+        if user_btn not in st.session_state.user_presets[obj_name]:
+            st.session_state.user_presets[obj_name][user_btn] = {
+                p_key: p_cfg["default"] for p_key, p_cfg in obj_meta["params"].items()
+            }
+
+
+def sync_controls_to_object(active, previous):
+    """Sync controls so widgets reflect the active object's real state, including cross-object shared fields and derived clamps."""
+    if active != previous:
+        if active == "Tube" and previous in ("AdvancedTube", "ComplexTube"):
+            st.session_state.tube_inner_radius = st.session_state.tube_top_inner_radius
+        elif active in ("AdvancedTube", "ComplexTube") and previous == "Tube":
+            st.session_state.tube_top_inner_radius = st.session_state.tube_inner_radius
+            st.session_state.tube_bottom_inner_radius = st.session_state.tube_inner_radius
+    if active == "SimpleTorus" and st.session_state.torus_outer_radius < st.session_state.torus_inner_radius:
+        st.session_state.torus_outer_radius = st.session_state.torus_inner_radius
+
+
+def handle_active_object_change():
+    sync_controls_to_object(st.session_state.active_object, st.session_state.previous_active_object)
+    st.session_state.previous_active_object = st.session_state.active_object
+
+
+def apply_object_preset(preset_name):
+    active_cfg = OBJECT_REGISTRY[st.session_state.active_object]
+    if preset_name == "Defaults":
+        for p_key, p_cfg in active_cfg["params"].items():
+            st.session_state[p_key] = p_cfg["default"]
+    else:
+        preset_values = active_cfg.get("presets", {}).get(preset_name, {})
+        for p_key, val in preset_values.items():
+            st.session_state[p_key] = val
+
+
+def apply_user_preset(preset_name):
+    active_obj = st.session_state.active_object
+    active_cfg = OBJECT_REGISTRY[active_obj]
+    is_save_mode = bool(st.session_state.get("save_user_presets", True))
+
+    if is_save_mode:
+        saved_params = {}
+        for p_key, p_cfg in active_cfg["params"].items():
+            saved_params[p_key] = st.session_state.get(p_key, p_cfg["default"])
+        st.session_state.user_presets[active_obj][preset_name] = saved_params
+        st.session_state["_preset_toast"] = f"Saved {active_obj} parameters to {preset_name}!"
+    else:
+        preset_values = st.session_state.user_presets[active_obj].get(preset_name, {})
+        for p_key, val in preset_values.items():
+            st.session_state[p_key] = val
+        st.session_state["_preset_toast"] = f"Applied {preset_name} for {active_obj}!"
+
+
+def generate_active_geometry():
+    active = st.session_state.active_object
+    generator = OBJECT_REGISTRY[active]["generator"]
+    return generator(st.session_state)
+
+
+st.session_state.setdefault("previous_active_object", st.session_state.active_object)
+sync_controls_to_object(st.session_state.active_object, st.session_state.previous_active_object)
+
+vertices, faces, edge_indices = generate_active_geometry()
+
+if "_preset_toast" in st.session_state and st.session_state["_preset_toast"]:
+    st.toast(st.session_state["_preset_toast"])
+    st.session_state["_preset_toast"] = ""
 
 st.markdown("<div class='eyebrow'>GEOMETRY LAB / 01</div>", unsafe_allow_html=True)
 st.title("HexSphere Studio")
 st.caption("Faceted 3D object generator with real-time viewport and Wavefront OBJ export.")
 
 with st.sidebar:
-    st.markdown("### 1. Object Creation & Download")
+    st.markdown("### 1. Server Control Panel")
     st.caption("Configure geometry parameters and apply changes to update the 3D model.")
+    active_object = st.radio("Object type", tuple(OBJECT_REGISTRY.keys()), key="active_object", label_visibility="collapsed", on_change=handle_active_object_change)
+    st.divider()
     with st.form("controls"):
-        active_object = st.radio("Object type", ("Hex Sphere", "Cube", "Tube", "AdvancedTube", "ComplexTube", "SimpleTorus"), key="active_object", label_visibility="collapsed")
-        st.divider()
-        if st.session_state.active_object == "Hex Sphere":
-            st.markdown("#### Hex sphere")
-            st.slider("Radius", 1.0, 12.0, step=0.5, key="radius")
-            st.slider("Latitude resolution", 6, 36, key="xy_resolution")
-            st.slider("Grid thickness", 1, 8, key="thickness")
-        elif st.session_state.active_object == "Cube":
-            st.markdown("#### Cube")
-            st.slider("Size", 1.0, 16.0, step=0.5, key="cube_size")
-            st.slider("Grid thickness", 1, 8, key="thickness")
-        elif st.session_state.active_object == "Tube":
-            st.markdown("#### Tube")
-            st.toggle("Cylinder type", key="tube_cylinder")
-            st.slider("Sides", 3, 15, key="tube_sides", disabled=st.session_state.tube_cylinder)
-            st.slider("Length", 1.0, 20.0, step=0.5, key="tube_length")
-            st.slider("Inner radius", 0.5, 10.0, step=0.5, key="tube_inner_radius")
-            st.slider("Thickness", 0.5, 8.0, step=0.5, key="tube_thickness")
-            st.slider("Top side angle", -60, 60, key="tube_top_angle")
-            st.slider("Bottom side angle", -60, 60, key="tube_bottom_angle")
-        elif st.session_state.active_object == "AdvancedTube":
-            st.markdown("#### AdvancedTube")
-            st.toggle("Cylinder type", key="tube_cylinder")
-            st.slider("Sides", 3, 15, key="tube_sides", disabled=st.session_state.tube_cylinder)
-            st.slider("Length", 1.0, 20.0, step=0.5, key="tube_length")
-            st.slider("Top side inner radius", 0.0, 10.0, step=0.5, key="tube_top_inner_radius")
-            st.slider("Bottom side inner radius", 0.0, 10.0, step=0.5, key="tube_bottom_inner_radius")
-            st.slider("Thickness", 0.5, 8.0, step=0.5, key="tube_thickness")
-            st.slider("Top side angle", -60, 60, key="tube_top_angle")
-            st.slider("Bottom side angle", -60, 60, key="tube_bottom_angle")
-        elif st.session_state.active_object == "ComplexTube":
-            st.markdown("#### ComplexTube")
-            st.slider("Sides", 3, 15, key="tube_sides")
-            st.slider("Length", 1.0, 20.0, step=0.5, key="tube_length")
-            st.slider("Top side inner radius", 0.0, 10.0, step=0.5, key="tube_top_inner_radius")
-            st.slider("Bottom side inner radius", 0.0, 10.0, step=0.5, key="tube_bottom_inner_radius")
-            st.slider("Thickness", 0.5, 8.0, step=0.5, key="tube_thickness")
-            st.slider("Top side angle", -60, 60, key="tube_top_angle")
-            st.slider("Bottom side angle", -60, 60, key="tube_bottom_angle")
-            st.slider("Twist per stack", -15, 15, key="tube_twist")
-            st.slider("Stack thickness", 1.0, 10.0, step=1.0, key="tube_stack_thickness")
-        else:
-            st.markdown("#### SimpleTorus")
-            st.slider("Inner radius", 0.5, 20.0, step=0.5, key="torus_inner_radius")
-            st.slider("Outer radius", 0.5, 30.0, step=0.5, key="torus_outer_radius")
-            st.slider("Hollow from center", 0.0, 100.0, step=5.0, key="torus_hollow_percent", format="%.0f%%")
-            st.slider("X/Y ratio", 0.1, 3.0, step=0.1, key="torus_xy_ratio")
-            st.slider("Start angle", -360.0, 360.0, step=1.0, key="torus_start_angle")
-            st.slider("Sweep", 1.0, 360.0, step=1.0, key="torus_sweep")
-            st.toggle("Cylinder", key="torus_cylinder")
-            st.slider("Polygon sides", 3, 15, key="torus_sides", disabled=st.session_state.torus_cylinder)
+        active_cfg = OBJECT_REGISTRY[st.session_state.active_object]
+        st.markdown(f"#### {active_cfg['label']}")
+        for p_key, p_cfg in active_cfg["params"].items():
+            p_type = p_cfg.get("type", "slider")
+            default_val = p_cfg["default"]
+            is_disabled = (
+                bool(st.session_state.get(p_cfg["disabled_by"], False))
+                if "disabled_by" in p_cfg
+                else False
+            )
+            if p_type == "toggle":
+                st.toggle(
+                    p_cfg["label"],
+                    value=default_val,
+                    key=p_key,
+                    disabled=is_disabled,
+                )
+            elif p_type == "slider":
+                slider_kwargs = {}
+                if "step" in p_cfg:
+                    slider_kwargs["step"] = p_cfg["step"]
+                if "format" in p_cfg:
+                    slider_kwargs["format"] = p_cfg["format"]
+                st.slider(
+                    p_cfg["label"],
+                    p_cfg["min"],
+                    p_cfg["max"],
+                    default_val,
+                    key=p_key,
+                    disabled=is_disabled,
+                    **slider_kwargs,
+                )
         submitted = st.form_submit_button("Apply object", use_container_width=True, type="primary")
 
-    if st.button("Reset parameters", use_container_width=True):
-        for key, value in DEFAULTS.items():
-            st.session_state[key] = value
-        st.rerun()
+    btn_col1, btn_col2, btn_col3 = st.sidebar.columns(3)
+    btn_col1.button(
+        "Defaults",
+        use_container_width=True,
+        on_click=apply_object_preset,
+        args=("Defaults",),
+    )
+    btn_col2.button(
+        "Preset1",
+        use_container_width=True,
+        on_click=apply_object_preset,
+        args=("Preset1",),
+    )
+    btn_col3.button(
+        "Preset2",
+        use_container_width=True,
+        on_click=apply_object_preset,
+        args=("Preset2",),
+    )
+
+    user_col1, user_col2, user_col3 = st.sidebar.columns(3)
+    user_col1.button(
+        "User1",
+        use_container_width=True,
+        on_click=apply_user_preset,
+        args=("User1",),
+    )
+    user_col2.button(
+        "User2",
+        use_container_width=True,
+        on_click=apply_user_preset,
+        args=("User2",),
+    )
+    user_col3.button(
+        "User3",
+        use_container_width=True,
+        on_click=apply_user_preset,
+        args=("User3",),
+    )
+    is_save_mode = st.sidebar.toggle("Save user presets", key="save_user_presets", value=True)
+    if is_save_mode:
+        st.sidebar.caption("Click to Save Presets")
+    else:
+        st.sidebar.caption("Click to apply the presets")
 
     st.divider()
     st.markdown("### Viewport Controls")
@@ -386,70 +1230,18 @@ with st.sidebar:
         help="Attach or detach the 3D visualization controls panel (rotation, animation, color). Detached by default for a larger 3D viewer.",
     )
 
-
-def generate_active_geometry():
-    active = st.session_state.active_object
-    if active == "Hex Sphere":
-        return build_hex_sphere(
-            st.session_state.radius,
-            st.session_state.xy_resolution,
-            st.session_state.yz_resolution,
-            st.session_state.zx_resolution,
-        )
-    elif active == "Cube":
-        return build_cube(st.session_state.cube_size)
-    elif active == "Tube":
-        return build_tube(
-            st.session_state.tube_length,
-            st.session_state.tube_inner_radius,
-            st.session_state.tube_thickness,
-            st.session_state.tube_sides,
-            st.session_state.tube_top_angle,
-            st.session_state.tube_bottom_angle,
-            st.session_state.tube_cylinder,
-        )
-    elif active == "AdvancedTube":
-        return build_advanced_tube(
-            st.session_state.tube_length,
-            st.session_state.tube_top_inner_radius,
-            st.session_state.tube_bottom_inner_radius,
-            st.session_state.tube_thickness,
-            st.session_state.tube_sides,
-            st.session_state.tube_top_angle,
-            st.session_state.tube_bottom_angle,
-            st.session_state.tube_cylinder,
-        )
-    elif active == "ComplexTube":
-        return build_complex_tube(
-            st.session_state.tube_length,
-            st.session_state.tube_top_inner_radius,
-            st.session_state.tube_bottom_inner_radius,
-            st.session_state.tube_thickness,
-            st.session_state.tube_sides,
-            st.session_state.tube_top_angle,
-            st.session_state.tube_bottom_angle,
-            st.session_state.tube_twist,
-            st.session_state.tube_stack_thickness,
-        )
-    else:
-        return build_simple_torus(
-            st.session_state.torus_inner_radius,
-            max(st.session_state.torus_inner_radius, st.session_state.torus_outer_radius),
-            st.session_state.torus_hollow_percent,
-            st.session_state.torus_xy_ratio,
-            st.session_state.torus_start_angle,
-            st.session_state.torus_sweep,
-            st.session_state.torus_sides,
-            st.session_state.torus_cylinder,
-        )
-
-
-vertices, faces, edge_indices = generate_active_geometry()
-
-with st.sidebar:
     st.divider()
     st.markdown("### Export OBJ")
-    obj_data = generate_obj_text(vertices, faces)
+    active_meta = {
+        p_key: st.session_state.get(p_key, p_cfg["default"])
+        for p_key, p_cfg in OBJECT_REGISTRY[st.session_state.active_object]["params"].items()
+    }
+    obj_data = generate_obj_text(
+        vertices,
+        faces,
+        object_name=st.session_state.active_object,
+        params=active_meta,
+    )
     file_name = f"{st.session_state.active_object.lower().replace(' ', '_')}.obj"
     st.download_button(
         label="Download .OBJ (Native)",
@@ -468,7 +1260,8 @@ if st.session_state.attach_vis_controls:
         st.slider("YZ angle", -180, 180, key="rotation_yz")
         st.slider("ZX angle", -180, 180, key="rotation_zx")
         st.markdown("#### Scale & Appearance")
-        st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale")
+        st.toggle("Auto-scale", key="vis_auto_scale")
+        st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)
         st.color_picker("Surface color", key="vis_color")
         st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha")
         st.toggle("Show grid", key="vis_show_grid")
@@ -476,13 +1269,14 @@ if st.session_state.attach_vis_controls:
 
     with viewer_col:
         st.subheader("2. Viewer (3D Viewport)")
+        scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
         fig = build_plotly_figure(
             vertices,
             faces,
             edge_indices,
             thickness=st.session_state.thickness,
             angles=(st.session_state.rotation_xy, st.session_state.rotation_yz, st.session_state.rotation_zx),
-            scale=st.session_state.vis_scale,
+            scale=scale,
             color=st.session_state.vis_color,
             alpha=st.session_state.vis_alpha,
             flatshading=st.session_state.vis_flatshading,
@@ -491,13 +1285,14 @@ if st.session_state.attach_vis_controls:
         st.plotly_chart(fig, use_container_width=True)
 else:
     st.subheader("Viewer (3D Viewport) — Visualization Controls Detached")
+    scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
     fig = build_plotly_figure(
         vertices,
         faces,
         edge_indices,
         thickness=st.session_state.thickness,
         angles=(st.session_state.rotation_xy, st.session_state.rotation_yz, st.session_state.rotation_zx),
-        scale=st.session_state.vis_scale,
+        scale=scale,
         color=st.session_state.vis_color,
         alpha=st.session_state.vis_alpha,
         flatshading=st.session_state.vis_flatshading,

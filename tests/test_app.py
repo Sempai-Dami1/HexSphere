@@ -55,3 +55,154 @@ def test_geometry_generation():
     assert len(v_tube) > 0 and len(f_tube) > 0 and len(e_tube) > 0
 
 
+def test_auto_scale_defaults_and_slider_control():
+    assert "vis_auto_scale" in streamlit_app.DEFAULTS
+    assert streamlit_app.DEFAULTS["vis_auto_scale"] is True
+
+    source = pathlib.Path(streamlit_app.__file__).read_text()
+    assert 'st.toggle("Auto-scale", key="vis_auto_scale")' in source
+    assert 'st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)' in source
+
+
+def test_object_selection_auto_generates_geometry():
+    source = pathlib.Path(streamlit_app.__file__).read_text()
+    # Check that object selection radio is placed outside the form to allow instant auto-generation
+    radio_pos = source.find('st.radio("Object type"')
+    form_pos = source.find('with st.form("controls"):')
+    assert radio_pos != -1 and form_pos != -1
+    assert radio_pos < form_pos
+
+    # Test auto-generation for all active object types
+    import streamlit as st
+    for key, val in streamlit_app.DEFAULTS.items():
+        st.session_state[key] = val
+
+    for obj in ("Hex Sphere", "AdvancedHexSphere", "Cube", "Tube", "AdvancedTube", "ComplexTube", "SimpleTorus"):
+        st.session_state.active_object = obj
+        verts, faces, edges = streamlit_app.generate_active_geometry()
+        assert len(verts) > 0
+        assert len(faces) > 0
+        assert len(edges) > 0
+
+
+def test_object_registry_metadata_and_export():
+    assert "OBJECT_REGISTRY" in dir(streamlit_app)
+    registry = streamlit_app.OBJECT_REGISTRY
+    assert "Hex Sphere" in registry
+    assert "AdvancedHexSphere" in registry
+    assert "Cube" in registry
+
+    # Test Hex Sphere parameters in registry
+    hex_params = registry["Hex Sphere"]["params"]
+    assert "radius" in hex_params
+    assert "hex_subdivisions" in hex_params
+    assert "hex_size_pct" in hex_params
+    assert "thickness" in hex_params
+
+    # Test AdvancedHexSphere parameters in registry
+    adv_params = registry["AdvancedHexSphere"]["params"]
+    assert "radius" in adv_params
+    assert "hex_subdivisions" in adv_params
+    assert "hex_size_pct" in adv_params
+    assert "wall_angle" in adv_params
+    assert "wall_height" in adv_params
+    assert "wall_radius" in adv_params
+    assert "thickness" in adv_params
+
+    # Test presets exist in metadata for objects
+    for obj_name in ("Hex Sphere", "AdvancedHexSphere", "Cube", "Tube", "AdvancedTube", "ComplexTube", "SimpleTorus"):
+        presets = registry[obj_name].get("presets", {})
+        assert "Preset1" in presets
+        assert "Preset2" in presets
+
+    # Test OBJ metadata header generation
+    vertices = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+    faces = [(0, 1, 2)]
+    obj_text = streamlit_app.generate_obj_text(
+        vertices,
+        faces,
+        object_name="AdvancedHexSphere",
+        params={"radius": 5.0, "hex_subdivisions": 3, "wall_angle": 0, "wall_height": 20.0, "wall_radius": 80.0},
+    )
+    assert "# object_type: AdvancedHexSphere" in obj_text
+    assert "# metadata:" in obj_text
+    assert '"wall_angle": 0' in obj_text
+
+
+def test_true_hex_sphere_generation():
+    # Test true hexsphere generation with different subdivision levels
+    v1, f1, e1 = streamlit_app.build_hex_sphere(radius=5.0, hex_subdivisions=1, hex_size_pct=90.0)
+    assert len(v1) == 60 and len(f1) == 36 and len(e1) == 60
+
+    v2, f2, e2 = streamlit_app.build_hex_sphere(radius=5.0, hex_subdivisions=2, hex_size_pct=95.0)
+    assert len(v2) == 240 and len(f2) == 156 and len(e2) == 240
+
+    v3, f3, e3 = streamlit_app.build_hex_sphere(radius=5.0, hex_subdivisions=3, hex_size_pct=100.0)
+    assert len(v3) == 540 and len(f3) == 356 and len(e3) == 540
+
+
+def test_advanced_hex_sphere_generation():
+    # Test spike/pyramid pointing outward
+    v_out, f_out, e_out = streamlit_app.build_advanced_hex_sphere(
+        radius=5.0,
+        hex_subdivisions=2,
+        hex_size_pct=95.0,
+        wall_angle=0,
+        wall_height=30.0,
+        wall_radius=80.0,
+    )
+    assert len(v_out) > 0 and len(f_out) > 0 and len(e_out) > 0
+
+    # Test spike/pyramid pointing inward with wall angle (frustum)
+    v_in, f_in, e_in = streamlit_app.build_advanced_hex_sphere(
+        radius=5.0,
+        hex_subdivisions=2,
+        hex_size_pct=95.0,
+        wall_angle=25.0,
+        wall_height=-30.0,
+        wall_radius=100.0,
+    )
+    assert len(v_in) > 0 and len(f_in) > 0 and len(e_in) > 0
+
+
+def test_user_presets_save_and_apply():
+    import streamlit as st
+
+    # Initialize state
+    st.session_state.active_object = "Cube"
+    st.session_state.cube_size = 8.0
+    st.session_state.thickness = 3
+    st.session_state.save_user_presets = True
+    if "user_presets" not in st.session_state:
+        st.session_state.user_presets = {}
+    st.session_state.user_presets["Cube"] = {
+        "User1": {"cube_size": 8.0, "thickness": 3},
+        "User2": {"cube_size": 8.0, "thickness": 3},
+        "User3": {"cube_size": 8.0, "thickness": 3},
+    }
+
+    # Change slider value in session_state and click User1 when save switch is ON (True)
+    st.session_state.cube_size = 14.5
+    st.session_state.thickness = 7
+    st.session_state.save_user_presets = True
+    streamlit_app.apply_user_preset("User1")
+    assert st.session_state.user_presets["Cube"]["User1"]["cube_size"] == 14.5
+    assert st.session_state.user_presets["Cube"]["User1"]["thickness"] == 7
+
+    # Change to another value
+    st.session_state.cube_size = 4.0
+    st.session_state.thickness = 1
+
+    # Click User1 when save switch is OFF (False) to apply preset
+    st.session_state.save_user_presets = False
+    streamlit_app.apply_user_preset("User1")
+    assert st.session_state.cube_size == 14.5
+    assert st.session_state.thickness == 7
+
+    # Verify switch and dynamic captions exist in source
+    source = pathlib.Path(streamlit_app.__file__).read_text()
+    assert "Click to Save Presets" in source
+    assert "Click to apply the presets" in source
+    assert "on_click=apply_user_preset" in source
+
+
