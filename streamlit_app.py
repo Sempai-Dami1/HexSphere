@@ -1,5 +1,6 @@
 import json
 import math
+import time
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -111,6 +112,10 @@ def build_plotly_figure(
         showlegend=False,
         scene=dict(
             aspectmode="data",
+            # Force Plotly to recompute the auto-range on every rotation instead of
+            # keeping the viewport Streamlit preserves across reruns (which otherwise
+            # clips long/thin shapes like Tube once they rotate out of the old frame).
+            uirevision=f"angles:{angles}",
             xaxis=dict(
                 visible=show_grid,
                 showgrid=show_grid,
@@ -1055,6 +1060,11 @@ VIEWPORT_DEFAULTS = {
     "vis_show_grid": False,
     "vis_flatshading": True,
     "vis_material": "Matte",
+    "xy_spin": 0,
+    "yz_spin": 0,
+    "zx_spin": 0,
+    "angle_resolution": 1.0,
+    "anim_ticks_per_second": 10,
 }
 
 VIS_STATE_KEYS = (
@@ -1068,6 +1078,8 @@ VIS_STATE_KEYS = (
     "vis_alpha",
     "vis_show_grid",
     "vis_flatshading",
+    "angle_resolution",
+    "anim_ticks_per_second",
 )
 
 DEFAULTS = {"active_object": "Hex Sphere"}
@@ -1164,6 +1176,21 @@ def apply_material():
 def apply_vis_default():
     for key in VIS_STATE_KEYS:
         st.session_state[key] = VIEWPORT_DEFAULTS[key]
+    st.session_state.xy_spin = 0
+    st.session_state.yz_spin = 0
+    st.session_state.zx_spin = 0
+
+
+def set_spin(spin_key, direction):
+    st.session_state[spin_key] = direction
+
+
+def step_spin_angle(axis_key, spin_key):
+    """Advance an axis angle by one animation tick if its spin direction is active."""
+    direction = st.session_state.get(spin_key, 0)
+    if direction:
+        new_angle = st.session_state[axis_key] + direction * st.session_state.angle_resolution
+        st.session_state[axis_key] = ((new_angle + 180) % 360) - 180
 
 
 def apply_vis_state(state_name):
@@ -1270,24 +1297,24 @@ with st.sidebar:
                     disabled=is_disabled,
                     **slider_kwargs,
                 )
-        submitted = st.form_submit_button("Apply object", use_container_width=True, type="primary")
+        submitted = st.form_submit_button("Apply object", width='stretch', type="primary")
 
     btn_col1, btn_col2, btn_col3 = st.sidebar.columns(3)
     btn_col1.button(
         "Defaults",
-        use_container_width=True,
+        width='stretch',
         on_click=apply_object_preset,
         args=("Defaults",),
     )
     btn_col2.button(
         "Preset1",
-        use_container_width=True,
+        width='stretch',
         on_click=apply_object_preset,
         args=("Preset1",),
     )
     btn_col3.button(
         "Preset2",
-        use_container_width=True,
+        width='stretch',
         on_click=apply_object_preset,
         args=("Preset2",),
     )
@@ -1295,19 +1322,19 @@ with st.sidebar:
     user_col1, user_col2, user_col3 = st.sidebar.columns(3)
     user_col1.button(
         "User1",
-        use_container_width=True,
+        width='stretch',
         on_click=apply_user_preset,
         args=("User1",),
     )
     user_col2.button(
         "User2",
-        use_container_width=True,
+        width='stretch',
         on_click=apply_user_preset,
         args=("User2",),
     )
     user_col3.button(
         "User3",
-        use_container_width=True,
+        width='stretch',
         on_click=apply_user_preset,
         args=("User3",),
     )
@@ -1343,7 +1370,7 @@ with st.sidebar:
         data=obj_data,
         file_name=file_name,
         mime="text/plain",
-        use_container_width=True,
+        width='stretch',
     )
 
     st.divider()
@@ -1355,7 +1382,7 @@ with st.sidebar:
         data=recipe_json,
         file_name="hexsphere_recipe.json",
         mime="application/json",
-        use_container_width=True,
+        width='stretch',
     )
     recipe_upload = st.file_uploader(
         "Import Recipe",
@@ -1363,7 +1390,7 @@ with st.sidebar:
         key="recipe_uploader",
         label_visibility="collapsed",
     )
-    if st.button("Import Recipe", use_container_width=True):
+    if st.button("Import Recipe", width='stretch'):
         if recipe_upload is None:
             st.warning("Choose a recipe .json file first.")
         else:
@@ -1374,36 +1401,86 @@ with st.sidebar:
             except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
                 st.error("Invalid recipe file. Please upload a valid HexSphere recipe .json.")
 
-if st.session_state.attach_vis_controls:
-    viewer_col, vis_col = st.columns([3, 1])
-    with vis_col:
-        st.subheader("3. Visualization Controls")
-        st.markdown("#### Manual Rotation")
-        st.slider("XY angle", -180, 180, key="rotation_xy")
-        st.slider("YZ angle", -180, 180, key="rotation_yz")
-        st.slider("ZX angle", -180, 180, key="rotation_zx")
-        st.markdown("#### Scale & Appearance")
-        st.toggle("Auto-scale", key="vis_auto_scale")
-        st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)
-        st.color_picker("Surface color", key="vis_color")
-        st.selectbox("Material", options=list(MATERIAL_PRESETS.keys()), key="vis_material", on_change=apply_material)
-        st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha")
-        st.toggle("Show grid", key="vis_show_grid")
-        st.toggle("Flat shading", key="vis_flatshading")
+@st.fragment
+def render_viewer_section(vertices, faces, edge_indices):
+    """Isolated fragment so rotation controls and spin animation only re-render the viewer, not the whole page."""
+    if st.session_state.attach_vis_controls:
+        # Auto-rotate animation is disabled for now (perf tuning), so spin never advances.
+        st.session_state.xy_spin = 0
+        st.session_state.yz_spin = 0
+        st.session_state.zx_spin = 0
+        step_spin_angle("rotation_xy", "xy_spin")
+        step_spin_angle("rotation_yz", "yz_spin")
+        step_spin_angle("rotation_zx", "zx_spin")
 
-        st.markdown("#### Viewport States")
-        vis_btn_col1, vis_btn_col2, vis_btn_col3 = st.columns(3)
-        vis_btn_col1.button("Default", use_container_width=True, on_click=apply_vis_default, key="vis_default_btn")
-        vis_btn_col2.button("State1", use_container_width=True, on_click=apply_vis_state, args=("State1",), key="vis_state1_btn")
-        vis_btn_col3.button("State2", use_container_width=True, on_click=apply_vis_state, args=("State2",), key="vis_state2_btn")
-        is_vis_save_mode = st.toggle("Save viewport states", key="save_vis_states", value=True)
-        if is_vis_save_mode:
-            st.caption("Click State1/State2 to Save Viewport Controls")
-        else:
-            st.caption("Click State1/State2 to apply the saved viewport controls")
+        viewer_col, vis_col = st.columns([3, 1])
+        with vis_col:
+            st.subheader("3. Visualization Controls")
+            st.markdown("#### Manual Rotation")
+            xy_row = st.columns([7, 1, 1, 1])
+            xy_row[0].slider("XY angle", -180.0, 180.0, key="rotation_xy")
+            xy_row[1].button("⏪", key="xy_dec", width='stretch', disabled=True, on_click=set_spin, args=("xy_spin", -1))
+            xy_row[2].button("⏹", key="xy_stop", width='stretch', disabled=True, on_click=set_spin, args=("xy_spin", 0))
+            xy_row[3].button("⏩", key="xy_inc", width='stretch', disabled=True, on_click=set_spin, args=("xy_spin", 1))
 
-    with viewer_col:
-        st.subheader("2. Viewer (3D Viewport)")
+            yz_row = st.columns([7, 1, 1, 1])
+            yz_row[0].slider("YZ angle", -180.0, 180.0, key="rotation_yz")
+            yz_row[1].button("⏪", key="yz_dec", width='stretch', disabled=True, on_click=set_spin, args=("yz_spin", -1))
+            yz_row[2].button("⏹", key="yz_stop", width='stretch', disabled=True, on_click=set_spin, args=("yz_spin", 0))
+            yz_row[3].button("⏩", key="yz_inc", width='stretch', disabled=True, on_click=set_spin, args=("yz_spin", 1))
+
+            zx_row = st.columns([7, 1, 1, 1])
+            zx_row[0].slider("ZX angle", -180.0, 180.0, key="rotation_zx")
+            zx_row[1].button("⏪", key="zx_dec", width='stretch', disabled=True, on_click=set_spin, args=("zx_spin", -1))
+            zx_row[2].button("⏹", key="zx_stop", width='stretch', disabled=True, on_click=set_spin, args=("zx_spin", 0))
+            zx_row[3].button("⏩", key="zx_inc", width='stretch', disabled=True, on_click=set_spin, args=("zx_spin", 1))
+
+            st.slider("Angle resolution (deg/tick)", 1.0, 15.0, step=0.5, key="angle_resolution", disabled=True)
+            st.slider("Animation speed (ticks/sec)", 1, 30, step=1, key="anim_ticks_per_second", disabled=True)
+            st.caption("Auto-rotate animation is temporarily disabled (performance tuning in progress). Drag the sliders above to rotate manually.")
+
+            st.markdown("#### Scale & Appearance")
+            st.toggle("Auto-scale", key="vis_auto_scale")
+            st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)
+            st.color_picker("Surface color", key="vis_color")
+            st.selectbox("Material", options=list(MATERIAL_PRESETS.keys()), key="vis_material", on_change=apply_material)
+            st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha")
+            st.toggle("Show grid", key="vis_show_grid")
+            st.toggle("Flat shading", key="vis_flatshading")
+
+            st.markdown("#### Viewport States")
+            vis_btn_col1, vis_btn_col2, vis_btn_col3 = st.columns(3)
+            vis_btn_col1.button("Default", width='stretch', on_click=apply_vis_default, key="vis_default_btn")
+            vis_btn_col2.button("State1", width='stretch', on_click=apply_vis_state, args=("State1",), key="vis_state1_btn")
+            vis_btn_col3.button("State2", width='stretch', on_click=apply_vis_state, args=("State2",), key="vis_state2_btn")
+            is_vis_save_mode = st.toggle("Save viewport states", key="save_vis_states", value=True)
+            if is_vis_save_mode:
+                st.caption("Click State1/State2 to Save Viewport Controls")
+            else:
+                st.caption("Click State1/State2 to apply the saved viewport controls")
+
+        with viewer_col:
+            st.subheader("2. Viewer (3D Viewport)")
+            scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
+            fig = build_plotly_figure(
+                vertices,
+                faces,
+                edge_indices,
+                thickness=st.session_state.thickness,
+                angles=(st.session_state.rotation_xy, st.session_state.rotation_yz, st.session_state.rotation_zx),
+                scale=scale,
+                color=st.session_state.vis_color,
+                alpha=st.session_state.vis_alpha,
+                flatshading=st.session_state.vis_flatshading,
+                show_grid=st.session_state.vis_show_grid,
+            )
+            st.plotly_chart(fig, width='stretch')
+
+        if any(st.session_state.get(k, 0) for k in ("xy_spin", "yz_spin", "zx_spin")):
+            time.sleep(1.0 / st.session_state.anim_ticks_per_second)
+            st.rerun(scope="fragment")
+    else:
+        st.subheader("Viewer (3D Viewport) — Visualization Controls Detached")
         scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
         fig = build_plotly_figure(
             vertices,
@@ -1417,20 +1494,8 @@ if st.session_state.attach_vis_controls:
             flatshading=st.session_state.vis_flatshading,
             show_grid=st.session_state.vis_show_grid,
         )
-        st.plotly_chart(fig, use_container_width=True)
-else:
-    st.subheader("Viewer (3D Viewport) — Visualization Controls Detached")
-    scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
-    fig = build_plotly_figure(
-        vertices,
-        faces,
-        edge_indices,
-        thickness=st.session_state.thickness,
-        angles=(st.session_state.rotation_xy, st.session_state.rotation_yz, st.session_state.rotation_zx),
-        scale=scale,
-        color=st.session_state.vis_color,
-        alpha=st.session_state.vis_alpha,
-        flatshading=st.session_state.vis_flatshading,
-        show_grid=st.session_state.vis_show_grid,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
+
+
+render_viewer_section(vertices, faces, edge_indices)
+
