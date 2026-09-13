@@ -701,8 +701,8 @@ def build_simple_torus(inner_radius, outer_radius, hollow_percent, xy_ratio, sta
 
 
 OBJECT_REGISTRY = {
-    "Hex Sphere": {
-        "label": "Hex sphere",
+    "SimpleHexShpere": {
+        "label": "SimpleHexShpere",
         "generator": lambda s: build_hex_sphere(
             s["radius"],
             s["hex_subdivisions"],
@@ -971,8 +971,9 @@ OBJECT_REGISTRY = {
             },
         },
     },
-    "Cube": {
-        "label": "Cube",
+    "SimpleBlock": {
+        "label": "SimpleBlock",
+        "enabled": True,
         "generator": lambda s: build_cube(s["cube_size"]),
         "params": {
             "cube_size": {
@@ -1003,8 +1004,22 @@ OBJECT_REGISTRY = {
             },
         },
     },
-    "Tube": {
-        "label": "Tube",
+    "AdvancedBlock": {
+        "label": "AdvancedBlock",
+        "enabled": False,
+        "generator": None,
+        "params": {},
+        "presets": {},
+    },
+    "ComplexBlock": {
+        "label": "ComplexBlock",
+        "enabled": False,
+        "generator": None,
+        "params": {},
+        "presets": {},
+    },
+    "SimpleTube": {
+        "label": "SimpleTube",
         "generator": lambda s: build_tube(
             s["tube_length"],
             s["tube_inner_radius"],
@@ -1304,6 +1319,7 @@ OBJECT_REGISTRY = {
     },
     "SimpleTorus": {
         "label": "SimpleTorus",
+        "enabled": True,
         "generator": lambda s: build_simple_torus(
             s["torus_inner_radius"],
             s["torus_outer_radius"],
@@ -1402,6 +1418,20 @@ OBJECT_REGISTRY = {
             },
         },
     },
+    "AdvancedTorus": {
+        "label": "AdvancedTorus",
+        "enabled": False,
+        "generator": None,
+        "params": {},
+        "presets": {},
+    },
+    "ComplexTorus": {
+        "label": "ComplexTorus",
+        "enabled": False,
+        "generator": None,
+        "params": {},
+        "presets": {},
+    },
 }
 
 VIEWPORT_DEFAULTS = {
@@ -1409,7 +1439,7 @@ VIEWPORT_DEFAULTS = {
     "rotation_yz": 0,
     "rotation_zx": 0,
     "attach_vis_controls": False,
-    "vis_auto_scale": False,
+    "vis_auto_scale": True,
     "vis_scale": 1.0,
     "vis_color": "#FFFF00",
     "vis_alpha": 0.9,
@@ -1438,7 +1468,7 @@ VIS_STATE_KEYS = (
     "anim_ticks_per_second",
 )
 
-DEFAULTS = {"active_object": "Hex Sphere"}
+DEFAULTS = {"active_object": "SimpleHexShpere"}
 for obj_meta in OBJECT_REGISTRY.values():
     for p_key, p_cfg in obj_meta["params"].items():
         DEFAULTS[p_key] = p_cfg["default"]
@@ -1473,9 +1503,9 @@ for state_btn in ("State1", "State2"):
 def sync_controls_to_object(active, previous):
     """Sync controls so widgets reflect the active object's real state, including cross-object shared fields and derived clamps."""
     if active != previous:
-        if active == "Tube" and previous in ("AdvancedTube", "ComplexTube"):
+        if active == "SimpleTube" and previous in ("AdvancedTube", "ComplexTube"):
             st.session_state.tube_inner_radius = st.session_state.tube_top_inner_radius
-        elif active in ("AdvancedTube", "ComplexTube") and previous == "Tube":
+        elif active in ("AdvancedTube", "ComplexTube") and previous == "SimpleTube":
             st.session_state.tube_top_inner_radius = st.session_state.tube_inner_radius
             st.session_state.tube_bottom_inner_radius = st.session_state.tube_inner_radius
     if active == "SimpleTorus" and st.session_state.torus_outer_radius < st.session_state.torus_inner_radius:
@@ -1489,6 +1519,8 @@ def handle_active_object_change():
 
 def apply_object_preset(preset_name):
     active_cfg = OBJECT_REGISTRY[st.session_state.active_object]
+    if not active_cfg.get("enabled", True):
+        return
     if preset_name == "Defaults":
         for p_key, p_cfg in active_cfg["params"].items():
             st.session_state[p_key] = p_cfg["default"]
@@ -1501,6 +1533,8 @@ def apply_object_preset(preset_name):
 def apply_user_preset(preset_name):
     active_obj = st.session_state.active_object
     active_cfg = OBJECT_REGISTRY[active_obj]
+    if not active_cfg.get("enabled", True):
+        return
     is_save_mode = bool(st.session_state.get("save_user_presets", True))
 
     if is_save_mode:
@@ -1518,7 +1552,10 @@ def apply_user_preset(preset_name):
 
 def generate_active_geometry():
     active = st.session_state.active_object
-    generator = OBJECT_REGISTRY[active]["generator"]
+    active_cfg = OBJECT_REGISTRY[active]
+    if not active_cfg.get("enabled", True) or active_cfg.get("generator") is None:
+        return [], [], []
+    generator = active_cfg["generator"]
     return generator(st.session_state)
 
 
@@ -1623,61 +1660,68 @@ with st.sidebar:
     with st.form("controls"):
         active_cfg = OBJECT_REGISTRY[st.session_state.active_object]
         st.markdown(f"#### {active_cfg['label']}")
-        for p_key, p_cfg in active_cfg["params"].items():
-            p_type = p_cfg.get("type", "slider")
-            default_val = p_cfg["default"]
-            is_disabled = (
-                bool(st.session_state.get(p_cfg["disabled_by"], False))
-                if "disabled_by" in p_cfg
-                else False
-            )
-            if p_type == "toggle":
-                st.toggle(
-                    p_cfg["label"],
-                    value=default_val,
-                    key=p_key,
-                    disabled=is_disabled,
+        if not active_cfg.get("enabled", True):
+            st.info("This object is a ToDo item for Server Controls and is not implemented or enabled yet.")
+            submitted = st.form_submit_button("Apply object", width='stretch', type="primary", disabled=True)
+        else:
+            for p_key, p_cfg in active_cfg["params"].items():
+                p_type = p_cfg.get("type", "slider")
+                default_val = p_cfg["default"]
+                is_disabled = (
+                    bool(st.session_state.get(p_cfg["disabled_by"], False))
+                    if "disabled_by" in p_cfg
+                    else False
                 )
-            elif p_type == "slider":
-                slider_kwargs = {}
-                if "step" in p_cfg:
-                    slider_kwargs["step"] = p_cfg["step"]
-                if "format" in p_cfg:
-                    slider_kwargs["format"] = p_cfg["format"]
-                st.slider(
-                    p_cfg["label"],
-                    p_cfg["min"],
-                    p_cfg["max"],
-                    default_val,
-                    key=p_key,
-                    disabled=is_disabled,
-                    **slider_kwargs,
-                )
-            elif p_type == "select":
-                st.selectbox(
-                    p_cfg["label"],
-                    options=p_cfg["options"],
-                    key=p_key,
-                    disabled=is_disabled,
-                )
-        submitted = st.form_submit_button("Apply object", width='stretch', type="primary")
+                if p_type == "toggle":
+                    st.toggle(
+                        p_cfg["label"],
+                        value=default_val,
+                        key=p_key,
+                        disabled=is_disabled,
+                    )
+                elif p_type == "slider":
+                    slider_kwargs = {}
+                    if "step" in p_cfg:
+                        slider_kwargs["step"] = p_cfg["step"]
+                    if "format" in p_cfg:
+                        slider_kwargs["format"] = p_cfg["format"]
+                    st.slider(
+                        p_cfg["label"],
+                        p_cfg["min"],
+                        p_cfg["max"],
+                        default_val,
+                        key=p_key,
+                        disabled=is_disabled,
+                        **slider_kwargs,
+                    )
+                elif p_type == "select":
+                    st.selectbox(
+                        p_cfg["label"],
+                        options=p_cfg["options"],
+                        key=p_key,
+                        disabled=is_disabled,
+                    )
+            submitted = st.form_submit_button("Apply object", width='stretch', type="primary")
 
     btn_col1, btn_col2, btn_col3 = st.sidebar.columns(3)
     btn_col1.button(
         "Defaults",
         width='stretch',
+        disabled=not active_cfg.get("enabled", True),
         on_click=apply_object_preset,
         args=("Defaults",),
     )
     btn_col2.button(
         "Preset1",
         width='stretch',
+        disabled=not active_cfg.get("enabled", True),
         on_click=apply_object_preset,
         args=("Preset1",),
     )
     btn_col3.button(
         "Preset2",
         width='stretch',
+        disabled=not active_cfg.get("enabled", True),
         on_click=apply_object_preset,
         args=("Preset2",),
     )
@@ -1686,18 +1730,21 @@ with st.sidebar:
     user_col1.button(
         "User1",
         width='stretch',
+        disabled=not active_cfg.get("enabled", True),
         on_click=apply_user_preset,
         args=("User1",),
     )
     user_col2.button(
         "User2",
         width='stretch',
+        disabled=not active_cfg.get("enabled", True),
         on_click=apply_user_preset,
         args=("User2",),
     )
     user_col3.button(
         "User3",
         width='stretch',
+        disabled=not active_cfg.get("enabled", True),
         on_click=apply_user_preset,
         args=("User3",),
     )

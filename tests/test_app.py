@@ -77,23 +77,36 @@ def test_object_selection_auto_generates_geometry():
     for key, val in streamlit_app.DEFAULTS.items():
         st.session_state[key] = val
 
-    for obj in ("Hex Sphere", "AdvancedHexSphere", "Cube", "Tube", "AdvancedTube", "ComplexTube", "SimpleTorus"):
+    for obj in ("SimpleHexShpere", "AdvancedHexSphere", "ComplexHexSphere", "SimpleBlock", "SimpleTube", "AdvancedTube", "ComplexTube", "SimpleTorus"):
         st.session_state.active_object = obj
         verts, faces, edges = streamlit_app.generate_active_geometry()
         assert len(verts) > 0
         assert len(faces) > 0
         assert len(edges) > 0
 
+    for obj in ("AdvancedBlock", "ComplexBlock", "AdvancedTorus", "ComplexTorus"):
+        st.session_state.active_object = obj
+        verts, faces, edges = streamlit_app.generate_active_geometry()
+        assert verts == [] and faces == [] and edges == []
+
 
 def test_object_registry_metadata_and_export():
     assert "OBJECT_REGISTRY" in dir(streamlit_app)
     registry = streamlit_app.OBJECT_REGISTRY
-    assert "Hex Sphere" in registry
+    assert "SimpleHexShpere" in registry
     assert "AdvancedHexSphere" in registry
-    assert "Cube" in registry
+    assert "SimpleBlock" in registry
+    assert "AdvancedBlock" in registry
+    assert "ComplexBlock" in registry
+    assert "SimpleTube" in registry
+    assert "AdvancedTube" in registry
+    assert "ComplexTube" in registry
+    assert "SimpleTorus" in registry
+    assert "AdvancedTorus" in registry
+    assert "ComplexTorus" in registry
 
     # Test Hex Sphere parameters in registry
-    hex_params = registry["Hex Sphere"]["params"]
+    hex_params = registry["SimpleHexShpere"]["params"]
     assert "radius" in hex_params
     assert "hex_subdivisions" in hex_params
     assert "hex_size_pct" in hex_params
@@ -109,8 +122,8 @@ def test_object_registry_metadata_and_export():
     assert "wall_radius" in adv_params
     assert "thickness" in adv_params
 
-    # Test presets exist in metadata for objects
-    for obj_name in ("Hex Sphere", "AdvancedHexSphere", "Cube", "Tube", "AdvancedTube", "ComplexTube", "SimpleTorus"):
+    # Test presets exist in metadata for enabled objects
+    for obj_name in ("SimpleHexShpere", "AdvancedHexSphere", "ComplexHexSphere", "SimpleBlock", "SimpleTube", "AdvancedTube", "ComplexTube", "SimpleTorus"):
         presets = registry[obj_name].get("presets", {})
         assert "Preset1" in presets
         assert "Preset2" in presets
@@ -169,13 +182,13 @@ def test_user_presets_save_and_apply():
     import streamlit as st
 
     # Initialize state
-    st.session_state.active_object = "Cube"
+    st.session_state.active_object = "SimpleBlock"
     st.session_state.cube_size = 8.0
     st.session_state.thickness = 3
     st.session_state.save_user_presets = True
     if "user_presets" not in st.session_state:
         st.session_state.user_presets = {}
-    st.session_state.user_presets["Cube"] = {
+    st.session_state.user_presets["SimpleBlock"] = {
         "User1": {"cube_size": 8.0, "thickness": 3},
         "User2": {"cube_size": 8.0, "thickness": 3},
         "User3": {"cube_size": 8.0, "thickness": 3},
@@ -186,8 +199,8 @@ def test_user_presets_save_and_apply():
     st.session_state.thickness = 7
     st.session_state.save_user_presets = True
     streamlit_app.apply_user_preset("User1")
-    assert st.session_state.user_presets["Cube"]["User1"]["cube_size"] == 14.5
-    assert st.session_state.user_presets["Cube"]["User1"]["thickness"] == 7
+    assert st.session_state.user_presets["SimpleBlock"]["User1"]["cube_size"] == 14.5
+    assert st.session_state.user_presets["SimpleBlock"]["User1"]["thickness"] == 7
 
     # Change to another value
     st.session_state.cube_size = 4.0
