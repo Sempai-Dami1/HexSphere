@@ -7,6 +7,14 @@ import streamlit as st
 
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
 
+APP_VERSION = "1.0.0"
+
+MATERIAL_PRESETS = {
+    "Matte": {"alpha": 1.0, "flatshading": True},
+    "Glossy": {"alpha": 0.85, "flatshading": False},
+    "Metallic": {"alpha": 0.7, "flatshading": False},
+}
+
 
 def generate_obj_text(vertices, faces, object_name=None, params=None):
     lines = ["# HexSphere Studio model"]
@@ -1036,17 +1044,31 @@ OBJECT_REGISTRY = {
 }
 
 VIEWPORT_DEFAULTS = {
-    "rotation_xy": 20,
-    "rotation_yz": 25,
+    "rotation_xy": 0,
+    "rotation_yz": 0,
     "rotation_zx": 0,
     "attach_vis_controls": False,
-    "vis_auto_scale": True,
+    "vis_auto_scale": False,
     "vis_scale": 1.0,
-    "vis_color": "#F4B942",
-    "vis_alpha": 0.94,
+    "vis_color": "#FFFF00",
+    "vis_alpha": 0.9,
     "vis_show_grid": False,
     "vis_flatshading": True,
+    "vis_material": "Matte",
 }
+
+VIS_STATE_KEYS = (
+    "rotation_xy",
+    "rotation_yz",
+    "rotation_zx",
+    "vis_auto_scale",
+    "vis_scale",
+    "vis_color",
+    "vis_material",
+    "vis_alpha",
+    "vis_show_grid",
+    "vis_flatshading",
+)
 
 DEFAULTS = {"active_object": "Hex Sphere"}
 for obj_meta in OBJECT_REGISTRY.values():
@@ -1070,6 +1092,14 @@ for obj_name, obj_meta in OBJECT_REGISTRY.items():
             st.session_state.user_presets[obj_name][user_btn] = {
                 p_key: p_cfg["default"] for p_key, p_cfg in obj_meta["params"].items()
             }
+
+st.session_state.setdefault("save_vis_states", True)
+
+if "vis_user_states" not in st.session_state:
+    st.session_state.vis_user_states = {}
+for state_btn in ("State1", "State2"):
+    if state_btn not in st.session_state.vis_user_states:
+        st.session_state.vis_user_states[state_btn] = {key: VIEWPORT_DEFAULTS[key] for key in VIS_STATE_KEYS}
 
 
 def sync_controls_to_object(active, previous):
@@ -1122,6 +1152,71 @@ def generate_active_geometry():
     active = st.session_state.active_object
     generator = OBJECT_REGISTRY[active]["generator"]
     return generator(st.session_state)
+
+
+def apply_material():
+    preset = MATERIAL_PRESETS.get(st.session_state.vis_material)
+    if preset:
+        st.session_state.vis_alpha = preset["alpha"]
+        st.session_state.vis_flatshading = preset["flatshading"]
+
+
+def apply_vis_default():
+    for key in VIS_STATE_KEYS:
+        st.session_state[key] = VIEWPORT_DEFAULTS[key]
+
+
+def apply_vis_state(state_name):
+    is_save_mode = bool(st.session_state.get("save_vis_states", True))
+    if is_save_mode:
+        st.session_state.vis_user_states[state_name] = {
+            key: st.session_state.get(key, VIEWPORT_DEFAULTS[key]) for key in VIS_STATE_KEYS
+        }
+        st.session_state["_preset_toast"] = f"Saved viewport controls to {state_name}!"
+    else:
+        state_values = st.session_state.vis_user_states.get(state_name, {})
+        for key, val in state_values.items():
+            st.session_state[key] = val
+        st.session_state["_preset_toast"] = f"Applied {state_name} viewport controls!"
+
+
+def build_recipe_dict():
+    """Snapshot app version, object type, parameters, color, material and user presets for export."""
+    active_obj = st.session_state.active_object
+    active_cfg = OBJECT_REGISTRY[active_obj]
+    parameters = {
+        p_key: st.session_state.get(p_key, p_cfg["default"])
+        for p_key, p_cfg in active_cfg["params"].items()
+    }
+    return {
+        "app_version": APP_VERSION,
+        "object_type": active_obj,
+        "parameters": parameters,
+        "color": st.session_state.vis_color,
+        "material": st.session_state.vis_material,
+        "user_presets": st.session_state.user_presets,
+    }
+
+
+def apply_recipe_dict(recipe):
+    """Restore object type, parameters, color, material and user presets from an imported recipe."""
+    object_type = recipe.get("object_type")
+    if object_type in OBJECT_REGISTRY:
+        st.session_state.active_object = object_type
+        st.session_state.previous_active_object = object_type
+        for p_key, val in recipe.get("parameters", {}).items():
+            if p_key in OBJECT_REGISTRY[object_type]["params"]:
+                st.session_state[p_key] = val
+    if "color" in recipe:
+        st.session_state.vis_color = recipe["color"]
+    if recipe.get("material") in MATERIAL_PRESETS:
+        st.session_state.vis_material = recipe["material"]
+    imported_presets = recipe.get("user_presets")
+    if isinstance(imported_presets, dict):
+        for obj_name, presets in imported_presets.items():
+            if obj_name in st.session_state.user_presets and isinstance(presets, dict):
+                st.session_state.user_presets[obj_name].update(presets)
+    st.session_state["_preset_toast"] = "Recipe imported successfully!"
 
 
 st.session_state.setdefault("previous_active_object", st.session_state.active_object)
@@ -1251,6 +1346,34 @@ with st.sidebar:
         use_container_width=True,
     )
 
+    st.divider()
+    st.markdown("### Recipe (Save/Load Config)")
+    st.caption("A recipe stores app version, object type, parameters, color, material and User1/2/3 presets.")
+    recipe_json = json.dumps(build_recipe_dict(), indent=2)
+    st.download_button(
+        label="Export Recipe",
+        data=recipe_json,
+        file_name="hexsphere_recipe.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    recipe_upload = st.file_uploader(
+        "Import Recipe",
+        type=["json"],
+        key="recipe_uploader",
+        label_visibility="collapsed",
+    )
+    if st.button("Import Recipe", use_container_width=True):
+        if recipe_upload is None:
+            st.warning("Choose a recipe .json file first.")
+        else:
+            try:
+                imported_recipe = json.loads(recipe_upload.getvalue().decode("utf-8"))
+                apply_recipe_dict(imported_recipe)
+                st.rerun()
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                st.error("Invalid recipe file. Please upload a valid HexSphere recipe .json.")
+
 if st.session_state.attach_vis_controls:
     viewer_col, vis_col = st.columns([3, 1])
     with vis_col:
@@ -1263,9 +1386,21 @@ if st.session_state.attach_vis_controls:
         st.toggle("Auto-scale", key="vis_auto_scale")
         st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)
         st.color_picker("Surface color", key="vis_color")
+        st.selectbox("Material", options=list(MATERIAL_PRESETS.keys()), key="vis_material", on_change=apply_material)
         st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha")
         st.toggle("Show grid", key="vis_show_grid")
         st.toggle("Flat shading", key="vis_flatshading")
+
+        st.markdown("#### Viewport States")
+        vis_btn_col1, vis_btn_col2, vis_btn_col3 = st.columns(3)
+        vis_btn_col1.button("Default", use_container_width=True, on_click=apply_vis_default, key="vis_default_btn")
+        vis_btn_col2.button("State1", use_container_width=True, on_click=apply_vis_state, args=("State1",), key="vis_state1_btn")
+        vis_btn_col3.button("State2", use_container_width=True, on_click=apply_vis_state, args=("State2",), key="vis_state2_btn")
+        is_vis_save_mode = st.toggle("Save viewport states", key="save_vis_states", value=True)
+        if is_vis_save_mode:
+            st.caption("Click State1/State2 to Save Viewport Controls")
+        else:
+            st.caption("Click State1/State2 to apply the saved viewport controls")
 
     with viewer_col:
         st.subheader("2. Viewer (3D Viewport)")
