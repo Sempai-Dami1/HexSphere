@@ -16,6 +16,8 @@ MATERIAL_PRESETS = {
     "Metallic": {"alpha": 0.7, "flatshading": False},
 }
 
+WALL_END_OPTIONS = ["Empty", "Filter", "Lense", "Hollow Magnet", "Solid Magnet"]
+
 
 def generate_obj_text(vertices, faces, object_name=None, params=None):
     lines = ["# HexSphere Studio model"]
@@ -355,6 +357,239 @@ def build_advanced_hex_sphere(
     return final_vertices, final_faces, final_edges
 
 
+def build_complex_hex_sphere(
+    radius=5.0,
+    hex_subdivisions=3,
+    hex_size_pct=95.0,
+    wall_angle=0.0,
+    wall_height=0.0,
+    wall_radius=100.0,
+    manifold_pct=0.0,
+    round_walls=False,
+    wall_end_type="Empty",
+):
+    phi = (1.0 + math.sqrt(5.0)) / 2.0
+    base_vertices = [
+        (-1, phi, 0), (1, phi, 0), (-1, -phi, 0), (1, -phi, 0),
+        (0, -1, phi), (0, 1, phi), (0, -1, -phi), (0, 1, -phi),
+        (phi, 0, -1), (phi, 0, 1), (-phi, 0, -1), (-phi, 0, 1),
+    ]
+
+    def normalize(v):
+        l = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+        return (v[0] / l, v[1] / l, v[2] / l) if l > 0 else (0.0, 0.0, 1.0)
+
+    base_vertices = [normalize(v) for v in base_vertices]
+    base_triangles = [
+        (0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11),
+        (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+        (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9),
+        (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1),
+    ]
+
+    point_map = {}
+
+    def get_subdivided_vertex(p1, p2, p3, i, j, k, n):
+        x = (i * p1[0] + j * p2[0] + k * p3[0]) / n
+        y = (i * p1[1] + j * p2[1] + k * p3[1]) / n
+        z = (i * p1[2] + j * p2[2] + k * p3[2]) / n
+        norm = normalize((x, y, z))
+        key = (round(norm[0], 6), round(norm[1], 6), round(norm[2], 6))
+        if key not in point_map:
+            point_map[key] = len(point_map)
+        return point_map[key], norm
+
+    triangles = []
+    points = []
+    n = max(1, min(8, int(hex_subdivisions)))
+    for t in base_triangles:
+        p1, p2, p3 = base_vertices[t[0]], base_vertices[t[1]], base_vertices[t[2]]
+        grid = {}
+        for i in range(n + 1):
+            for j in range(n + 1 - i):
+                k = n - i - j
+                idx, pt = get_subdivided_vertex(p1, p2, p3, i, j, k, n)
+                grid[(i, j)] = idx
+                while len(points) <= idx:
+                    points.append(pt)
+        for i in range(n):
+            for j in range(n - i):
+                triangles.append((grid[(i, j)], grid[(i + 1, j)], grid[(i, j + 1)]))
+                if i + j < n - 1:
+                    triangles.append((grid[(i + 1, j)], grid[(i + 1, j + 1)], grid[(i, j + 1)]))
+
+    vert_to_tri = [[] for _ in range(len(points))]
+    for t_idx, tri in enumerate(triangles):
+        for v in tri:
+            vert_to_tri[v].append(t_idx)
+
+    tri_centroids = []
+    for tri in triangles:
+        p0, p1, p2 = points[tri[0]], points[tri[1]], points[tri[2]]
+        c = normalize(((p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3))
+        tri_centroids.append(c)
+
+    scale_factor = max(0.1, min(1.0, float(hex_size_pct) / 100.0))
+    wall_rad_factor = max(0.1, min(1.0, float(wall_radius) / 100.0))
+    h = radius * (float(wall_height) / 100.0)
+    top_scale = max(0.0, min(1.0, math.sin(math.radians(float(wall_angle)))))
+    manifold_ratio = max(0.0, min(0.75, float(manifold_pct) / 100.0))
+    hole_active = manifold_ratio > 0.001 and wall_end_type != "Solid Magnet"
+    round_segments = 4 if round_walls else 1
+
+    final_vertices = []
+    final_faces = []
+    final_edges = []
+
+    for v_idx, v_center in enumerate(points):
+        adj_tris = vert_to_tri[v_idx]
+        if not adj_tris:
+            continue
+        normal = v_center
+        up = (0.0, 1.0, 0.0) if abs(normal[1]) < 0.9 else (1.0, 0.0, 0.0)
+        ux = up[1] * normal[2] - up[2] * normal[1]
+        uy = up[2] * normal[0] - up[0] * normal[2]
+        uz = up[0] * normal[1] - up[1] * normal[0]
+        l = math.sqrt(ux * ux + uy * uy + uz * uz)
+        u = (ux / l, uy / l, uz / l)
+        vx = normal[1] * u[2] - normal[2] * u[1]
+        vy = normal[2] * u[0] - normal[0] * u[2]
+        vz = normal[0] * u[1] - normal[1] * u[0]
+        v = (vx, vy, vz)
+
+        corners = []
+        for t_idx in adj_tris:
+            c = tri_centroids[t_idx]
+            dx = c[0] - v_center[0]
+            dy = c[1] - v_center[1]
+            dz = c[2] - v_center[2]
+            pu = dx * u[0] + dy * u[1] + dz * u[2]
+            pv = dx * v[0] + dy * v[1] + dz * v[2]
+            angle = math.atan2(pv, pu)
+            corners.append((angle, c))
+        corners.sort(key=lambda x: x[0])
+        m = len(corners)
+
+        def ring_at(scale, height):
+            idxs = []
+            for _, c in corners:
+                sx = v_center[0] + (c[0] - v_center[0]) * scale
+                sy = v_center[1] + (c[1] - v_center[1]) * scale
+                sz = v_center[2] + (c[2] - v_center[2]) * scale
+                sp = normalize((sx, sy, sz))
+                idx = len(final_vertices)
+                final_vertices.append((sp[0] * (radius + height), sp[1] * (radius + height), sp[2] * (radius + height)))
+                idxs.append(idx)
+            return idxs
+
+        def connect_ring_pair(idx_a, idx_b, flipped):
+            for k in range(len(idx_a)):
+                nxt = (k + 1) % len(idx_a)
+                a0, a1 = idx_a[k], idx_a[nxt]
+                b0, b1 = idx_b[k], idx_b[nxt]
+                if not flipped:
+                    final_faces.extend(((a0, a1, b1), (a0, b1, b0)))
+                else:
+                    final_faces.extend(((a0, b1, a1), (a0, b0, b1)))
+                final_edges.append((a0, b0))
+
+        def cap_ring(idxs, flipped):
+            for k in range(1, len(idxs) - 1):
+                if not flipped:
+                    final_faces.append((idxs[0], idxs[k], idxs[k + 1]))
+                else:
+                    final_faces.append((idxs[0], idxs[k + 1], idxs[k]))
+
+        outer_indices = ring_at(scale_factor, 0.0)
+        for k in range(m):
+            final_edges.append((outer_indices[k], outer_indices[(k + 1) % m]))
+
+        has_collar = wall_rad_factor < 0.999
+        if has_collar:
+            inner_factor = scale_factor * wall_rad_factor
+            inner_base_indices = ring_at(inner_factor, 0.0)
+            connect_ring_pair(outer_indices, inner_base_indices, flipped=False)
+            for k in range(m):
+                final_edges.append((inner_base_indices[k], inner_base_indices[(k + 1) % m]))
+            wall_base_indices = inner_base_indices
+        else:
+            inner_factor = scale_factor
+            wall_base_indices = outer_indices
+
+        # Tip scale before any manifold hole is cut: a flat plateau (wall_angle) or a sharp point.
+        plateau_scale = inner_factor * top_scale if top_scale > 0.01 else 0.0
+        hole_scale = inner_factor * manifold_ratio if hole_active else 0.0
+        tip_scale = max(plateau_scale, hole_scale)
+        is_flat_top = math.isclose(h, 0.0, abs_tol=1e-5) and math.isclose(top_scale, 0.0, abs_tol=1e-5)
+
+        if is_flat_top and not hole_active:
+            cap_ring(wall_base_indices, flipped=False)
+            continue
+
+        # Build the (optionally rounded) side wall from the base ring up to the tip.
+        prev_ring = wall_base_indices
+        tip_ring = None
+        for seg in range(1, round_segments + 1):
+            t = seg / round_segments
+            is_last = seg == round_segments
+            if is_last and tip_scale <= 1e-6:
+                apex_idx = len(final_vertices)
+                final_vertices.append((v_center[0] * (radius + h), v_center[1] * (radius + h), v_center[2] * (radius + h)))
+                for k in range(len(prev_ring)):
+                    nxt = (k + 1) % len(prev_ring)
+                    b_curr, b_nxt = prev_ring[k], prev_ring[nxt]
+                    if h >= 0:
+                        final_faces.append((b_curr, b_nxt, apex_idx))
+                    else:
+                        final_faces.append((b_curr, apex_idx, b_nxt))
+                    final_edges.append((b_curr, apex_idx))
+                prev_ring = None
+                break
+            seg_scale = inner_factor + (tip_scale - inner_factor) * t
+            seg_height = h * t
+            if round_walls and not is_last:
+                seg_scale += 0.12 * inner_factor * math.sin(math.pi * t)
+            seg_ring = ring_at(seg_scale, seg_height)
+            connect_ring_pair(prev_ring, seg_ring, flipped=(h < 0))
+            for k in range(len(seg_ring)):
+                final_edges.append((seg_ring[k], seg_ring[(k + 1) % len(seg_ring)]))
+            prev_ring = seg_ring
+            tip_ring = seg_ring
+
+        if prev_ring is None:
+            continue
+
+        if not hole_active:
+            cap_ring(tip_ring, flipped=(h < 0))
+            continue
+
+        # A manifold hole stays open at the tip; how it's finished depends on the wall-end fitting.
+        if wall_end_type in ("Empty", "Hollow Magnet"):
+            continue
+        elif wall_end_type == "Filter":
+            recess = 0.08 * radius if h >= 0 else -0.08 * radius
+            recessed_ring = ring_at(tip_scale * 0.9, h - recess)
+            connect_ring_pair(tip_ring, recessed_ring, flipped=(h < 0))
+            cap_ring(recessed_ring, flipped=(h < 0))
+        elif wall_end_type == "Lense":
+            bulge_height = h + (0.1 * radius if h >= 0 else -0.1 * radius)
+            lens_apex_idx = len(final_vertices)
+            final_vertices.append((
+                v_center[0] * (radius + bulge_height),
+                v_center[1] * (radius + bulge_height),
+                v_center[2] * (radius + bulge_height),
+            ))
+            for k in range(len(tip_ring)):
+                nxt = (k + 1) % len(tip_ring)
+                b_curr, b_nxt = tip_ring[k], tip_ring[nxt]
+                if h >= 0:
+                    final_faces.append((b_curr, b_nxt, lens_apex_idx))
+                else:
+                    final_faces.append((b_curr, lens_apex_idx, b_nxt))
+
+    return final_vertices, final_faces, final_edges
+
+
 def build_cube(size):
     half = size / 2
     vertices = [(-half, -half, -half), (half, -half, -half), (half, half, -half), (-half, half, -half), (-half, -half, half), (half, -half, half), (half, half, half), (-half, half, half)]
@@ -611,6 +846,127 @@ OBJECT_REGISTRY = {
                 "wall_angle": 0,
                 "wall_height": 0.0,
                 "wall_radius": 100.0,
+                "thickness": 3,
+            },
+        },
+    },
+    "ComplexHexSphere": {
+        "label": "ComplexHexSphere",
+        "generator": lambda s: build_complex_hex_sphere(
+            s["radius"],
+            s["hex_subdivisions"],
+            s["hex_size_pct"],
+            s["wall_angle"],
+            s["wall_height"],
+            s["wall_radius"],
+            s["manifold_pct"],
+            s["round_walls"],
+            s["wall_end_type"],
+        ),
+        "params": {
+            "radius": {
+                "label": "Sphere radius",
+                "type": "slider",
+                "min": 1.0,
+                "max": 12.0,
+                "default": 5.0,
+                "step": 0.5,
+            },
+            "hex_subdivisions": {
+                "label": "Hexagon density (subdivisions)",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+            "hex_size_pct": {
+                "label": "Hexagon size percentage",
+                "type": "slider",
+                "min": 10.0,
+                "max": 100.0,
+                "default": 95.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "wall_angle": {
+                "label": "Wall angle",
+                "type": "slider",
+                "min": 0,
+                "max": 90,
+                "default": 0,
+                "step": 1,
+            },
+            "wall_height": {
+                "label": "Wall height",
+                "type": "slider",
+                "min": -100.0,
+                "max": 100.0,
+                "default": 0.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "wall_radius": {
+                "label": "Wall radius",
+                "type": "slider",
+                "min": 50.0,
+                "max": 100.0,
+                "default": 100.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "manifold_pct": {
+                "label": "Manifold (tip hole size)",
+                "type": "slider",
+                "min": 0.0,
+                "max": 75.0,
+                "default": 0.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "round_walls": {
+                "label": "Round walls",
+                "type": "toggle",
+                "default": False,
+            },
+            "wall_end_type": {
+                "label": "Wall end fitting",
+                "type": "select",
+                "options": WALL_END_OPTIONS,
+                "default": "Empty",
+            },
+            "thickness": {
+                "label": "Grid thickness",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "wall_angle": 0,
+                "wall_height": 0.0,
+                "wall_radius": 100.0,
+                "manifold_pct": 0.0,
+                "round_walls": False,
+                "wall_end_type": "Empty",
+                "thickness": 3,
+            },
+            "Preset2": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "wall_angle": 0,
+                "wall_height": 0.0,
+                "wall_radius": 100.0,
+                "manifold_pct": 0.0,
+                "round_walls": False,
+                "wall_end_type": "Empty",
                 "thickness": 3,
             },
         },
@@ -1296,6 +1652,13 @@ with st.sidebar:
                     key=p_key,
                     disabled=is_disabled,
                     **slider_kwargs,
+                )
+            elif p_type == "select":
+                st.selectbox(
+                    p_cfg["label"],
+                    options=p_cfg["options"],
+                    key=p_key,
+                    disabled=is_disabled,
                 )
         submitted = st.form_submit_button("Apply object", width='stretch', type="primary")
 
