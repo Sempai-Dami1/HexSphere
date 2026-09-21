@@ -1,6 +1,8 @@
+import html
 import json
 import math
 import time
+import unicodedata
 from pathlib import Path
 
 import plotly.graph_objects as go
@@ -337,6 +339,17 @@ def safe_chr(codepoint):
         return ""
 
 
+def unicode_glyph(codepoint):
+    """Return a printable representation without passing unsafe code points to Streamlit/HTML."""
+    character = safe_chr(codepoint)
+    category = unicodedata.category(character) if character else "Cn"
+    if category[0] == "C":
+        return "\u25A1"
+    if category[0] == "M":
+        return "\u25CC" + character
+    return character
+
+
 def format_unicode_value(codepoint, value_format):
     if value_format == "Decimal":
         return str(codepoint)
@@ -357,8 +370,7 @@ def select_unichar(codepoint):
 
 
 def reset_unicode_offsets():
-    st.session_state.uni_h_offset = 0
-    st.session_state.uni_v_offset = 0
+    st.session_state.uni_selected_char = UNICODE_BLOCKS[st.session_state.uni_category_idx][0]
 
 
 def search_unicode_category():
@@ -371,6 +383,16 @@ def search_unicode_category():
     if matches:
         st.session_state.uni_category_idx = matches[0]
         reset_unicode_offsets()
+
+UNICODE_FONT_OPTIONS = {
+    "Segoe UI Symbol — symbols and math": '"Segoe UI Symbol", "Segoe UI", sans-serif',
+    "Segoe UI Emoji — emoji and pictographs": '"Segoe UI Emoji", "Segoe UI Symbol", sans-serif',
+    "Noto Sans Symbols 2 — symbols and math": '"Noto Sans Symbols 2", "Noto Sans Symbols", sans-serif',
+    "Noto Color Emoji — color emoji": '"Noto Color Emoji", "Segoe UI Emoji", sans-serif',
+    "Noto Music — musical notation": '"Noto Music", "Noto Sans Symbols 2", sans-serif',
+    "Symbola — broad Unicode coverage": '"Symbola", "Noto Sans Symbols 2", sans-serif',
+    "DejaVu Sans — general Unicode": '"DejaVu Sans", sans-serif',
+}
 
 
 def generate_obj_text(vertices, faces, object_name=None, params=None):
@@ -1793,6 +1815,7 @@ VIEWPORT_DEFAULTS = {
     "rotation_yz": 0,
     "rotation_zx": 0,
     "attach_vis_controls": False,
+    "attach_unicode_panel": False,
     "vis_auto_scale": True,
     "vis_scale": 1.0,
     "vis_color": "#FFFF00",
@@ -2115,6 +2138,11 @@ with st.sidebar:
         key="attach_vis_controls",
         help="Attach or detach the 3D visualization controls panel (rotation, animation, color). Detached by default for a larger 3D viewer.",
     )
+    st.toggle(
+        "Attach Unicode panel",
+        key="attach_unicode_panel",
+        help="Attach or detach the Unicode character browser below the 3D viewer. Detached by default.",
+    )
 
     st.divider()
     st.markdown("### Export OBJ")
@@ -2263,99 +2291,170 @@ def render_viewer_section(vertices, faces, edge_indices):
 
 @st.fragment
 def render_unicode_panel():
-    """Isolated fragment so grid/slider/search interactions don't rerun the 3D viewer above."""
-    st.session_state.setdefault("uni_category_idx", 0)
-    st.session_state.setdefault("uni_h_offset", 0)
-    st.session_state.setdefault("uni_v_offset", 0)
-    st.session_state.setdefault("uni_selected_char", 0x0041)
+    """Unicode browser kept in a fragment so character interactions stay local."""
+    default_block_idx = next((i for i, (block_start, _, _) in enumerate(UNICODE_BLOCKS) if block_start == 0x2600), 0)
+    st.session_state.setdefault("uni_category_idx", default_block_idx)
+    st.session_state.setdefault("uni_selected_char", 0x2600)
     st.session_state.setdefault("uni_rotation", 0)
-    st.session_state.setdefault("uni_value_format", "Decimal")
+    st.session_state.setdefault("uni_font", "Segoe UI Symbol — symbols and math")
     st.session_state.setdefault("uni_search_text", "")
     st.session_state.setdefault("uni_search_match_count", None)
 
-    st.divider()
-    st.subheader("4. Unicode Character Panel")
+    start, end, block_name = UNICODE_BLOCKS[st.session_state.uni_category_idx]
+    selected_cp = min(max(st.session_state.uni_selected_char, start), end)
+    st.session_state.uni_selected_char = selected_cp
+    block_size = end - start + 1
+    block_rows = max(1, math.ceil(block_size / 16))
 
-    grid_col, info_col = st.columns([1, 1])
+    st.markdown(
+        """
+        <style>
+        .unicode-shell {
+            background: #121b2b;
+            border: 1px solid #2f3d54;
+            border-radius: 10px;
+            color: #ecf2ff;
+            padding: 1.15rem;
+        }
+        .unicode-shell h2 { margin: 0; color: #f6f8fd; font-size: 1.65rem; }
+        .unicode-subtitle { color: #9ba9bd; margin: .2rem 0 1rem; }
+        .unicode-kicker { color: #78a8ff; font-size: .72rem; font-weight: 700; letter-spacing: .14em; }
+        .unicode-section {
+            background: #1a2638;
+            border: 1px solid #314159;
+            border-radius: 8px;
+            padding: .8rem;
+            margin-top: .8rem;
+        }
+        .unicode-section-title { color: #f4f7fb; font-weight: 700; margin-bottom: .55rem; }
+        .unicode-meta { color: #9ba9bd; font-size: .83rem; }
+        .unicode-preview {
+            align-items: center; background: #101827; border: 1px solid #3c4b64;
+            border-radius: 7px; display: flex; height: 174px; justify-content: center;
+            margin-bottom: .65rem; overflow: hidden;
+        }
+        .unicode-preview-glyph {
+            color: #f7f9ff;
+            font-size: 7rem; line-height: 1; transform-origin: center;
+        }
+        .unicode-info-grid { display: grid; gap: .5rem 1rem; grid-template-columns: 1fr 1fr; }
+        .unicode-info-grid div { border-bottom: 1px solid #2d3a50; padding: .35rem 0; }
+        .unicode-info-grid b { color: #f5f7fb; display: block; font-size: .82rem; }
+        .unicode-info-grid span { color: #aebbd0; font-family: monospace; font-size: .8rem; }
+        .st-key-unicode-grid [data-testid="stButton"] > button {
+            background: #202d41; border: 1px solid #3b4a61; border-radius: 3px; color: #e9eff9;
+            font-size: 1rem; min-height: 2.05rem; padding: 0;
+        }
+        .st-key-unicode-grid [data-testid="stButton"] > button:hover {
+            background: #355b93; border-color: #78a8ff; color: #fff;
+        }
+        .st-key-unicode-grid [data-testid="stHorizontalBlock"] { gap: .12rem; }
+        .st-key-unicode-grid [data-testid="stVerticalBlock"] { gap: .12rem; }
+        .unicode-axis { color: #8d9cb2; font-family: monospace; font-size: .7rem; text-align: center; }
+        .unicode-selected [data-testid="stButton"] > button { background: #3568ad; border-color: #8bb8ff; }
+        @media (max-width: 900px) { .unicode-info-grid { grid-template-columns: 1fr; } }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    with grid_col:
-        start, end, name = UNICODE_BLOCKS[st.session_state.uni_category_idx]
-        num_chars = end - start + 1
-        max_v_offset = max(0, (num_chars - 1) // 16)
-        st.session_state.uni_v_offset = min(st.session_state.uni_v_offset, max_v_offset)
-        st.caption(f"Block U+{start:04X}–U+{end:04X}: {name} ({num_chars} code points)")
+    st.markdown('<div class="unicode-shell">', unsafe_allow_html=True)
+    st.markdown('<div class="unicode-kicker">CHARACTER EXPLORER</div><h2>Unicode Panel</h2><div class="unicode-subtitle">Browse, search, and explore Unicode characters</div>', unsafe_allow_html=True)
 
-        base = start + st.session_state.uni_v_offset * 16 + st.session_state.uni_h_offset
-        for r in range(16):
-            row_cols = st.columns(16)
-            for c in range(16):
-                cp = base + r * 16 + c
-                if cp > end or cp > 0x10FFFF:
-                    row_cols[c].button(" ", key=f"unichar_cell_{r}_{c}", disabled=True, width='stretch')
-                else:
-                    label = safe_chr(cp)
-                    row_cols[c].button(
-                        label if label.strip() else "\u25A1",
-                        key=f"unichar_cell_{r}_{c}",
-                        width='stretch',
-                        help=f"U+{cp:04X}",
-                        on_click=select_unichar,
-                        args=(cp,),
-                    )
-
-        st.slider("Horizontal offset (fine scroll)", 0, 15, key="uni_h_offset")
-        st.slider("Vertical offset (rows of 16)", 0, max_v_offset, key="uni_v_offset")
-
-    with info_col:
+    control_col, search_col, font_col = st.columns([1.1, .9, 1.15])
+    with control_col:
         category_options = list(range(len(UNICODE_BLOCKS)))
 
         def format_category(i):
-            s, _, block_name = UNICODE_BLOCKS[i]
-            return f"{s:04X}: {block_name}"
+            s, _, name = UNICODE_BLOCKS[i]
+            return f"{s:04X} : {name}"
 
-        top_row = st.columns([3, 1])
-        top_row[0].selectbox(
-            "Unicode category",
-            options=category_options,
-            format_func=format_category,
-            key="uni_category_idx",
-            on_change=reset_unicode_offsets,
-        )
-        top_row[1].button("Search", width='stretch', on_click=search_unicode_category)
-        st.text_input(
-            "Search category by name",
-            key="uni_search_text",
-            placeholder="Search category by name or partial match...",
-            label_visibility="collapsed",
-        )
+        st.selectbox("Unicode Block", options=category_options, format_func=format_category,
+                     key="uni_category_idx", on_change=reset_unicode_offsets)
+    with search_col:
+        st.text_input("Search blocks", key="uni_search_text", placeholder="Search block name...")
+        st.button("Search", width="stretch", on_click=search_unicode_category)
         match_count = st.session_state.uni_search_match_count
-        if match_count is not None:
-            if match_count == 0:
-                st.caption("No matching category found.")
-            elif match_count > 1:
-                st.caption(f"{match_count} categories matched — showing first match.")
+        if match_count is not None and st.session_state.uni_search_text.strip():
+            st.caption("No matching block." if match_count == 0 else f"{match_count} block(s) matched.")
+    with font_col:
+        st.selectbox("Character Font", options=list(UNICODE_FONT_OPTIONS), key="uni_font",
+                     help="Choose a font installed on your system. Symbol and emoji fonts provide the best coverage for their named character sets.")
 
-        st.markdown("#### Selected Character")
-        selected_cp = st.session_state.uni_selected_char
-        selected_char = safe_chr(selected_cp)
-        st.markdown(
-            f"<div style='text-align:center; font-size:110px; line-height:1.4; "
-            f"transform: rotate({st.session_state.uni_rotation}deg);'>{selected_char}</div>",
-            unsafe_allow_html=True,
-        )
+    selected_font_family = UNICODE_FONT_OPTIONS[st.session_state.uni_font]
+    st.markdown(
+        f'''<style>
+        .st-key-unicode-grid [data-testid="stButton"] > button {{
+            font-family: {selected_font_family};
+        }}
+        </style>
+        <div class="unicode-meta" style="margin-top:-.5rem; margin-bottom:.4rem">Font preview: <span style="font-family:{selected_font_family}">Aa Ω ∑ ☀ 🎵</span> &nbsp; · &nbsp; {html.escape(st.session_state.uni_font.split(" — ")[0])}</div>''',
+        unsafe_allow_html=True,
+    )
+
+    grid_col, info_col = st.columns([1.28, .92], gap="large")
+
+    with grid_col:
+        st.markdown('<div class="unicode-section">', unsafe_allow_html=True)
+        st.markdown(f'<div class="unicode-section-title">{block_name}</div><div class="unicode-meta">U+{start:04X}–U+{end:04X} &nbsp; · &nbsp; {block_size} characters (16 × {block_rows})</div>', unsafe_allow_html=True)
+        with st.container(key="unicode-grid"):
+            header_cols = st.columns(17)
+            header_cols[0].markdown('<div class="unicode-axis"> </div>', unsafe_allow_html=True)
+            for col in range(16):
+                header_cols[col + 1].markdown(f'<div class="unicode-axis">{col:X}</div>', unsafe_allow_html=True)
+            for r in range(16):
+                row_cols = st.columns(17)
+                row_cols[0].markdown(f'<div class="unicode-axis">{r:X}</div>', unsafe_allow_html=True)
+                for c in range(16):
+                    cp = (start & ~0xFF) + r * 16 + c
+                    if cp < start or cp > end or cp > 0x10FFFF:
+                        row_cols[c + 1].button(" ", key=f"unichar_cell_{r}_{c}", disabled=True, width="stretch")
+                    else:
+                        row_cols[c + 1].button(
+                            unicode_glyph(cp),
+                            key=f"unichar_cell_{r}_{c}",
+                            width="stretch",
+                            help=f"U+{cp:04X}",
+                            on_click=select_unichar,
+                            args=(cp,),
+                        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with info_col:
+        character = safe_chr(selected_cp)
+        selected_char = html.escape(unicode_glyph(selected_cp))
+        char_name = unicodedata.name(character, "UNASSIGNED") if character else "UNASSIGNED"
+        category_code = unicodedata.category(character) if character else "Cn"
+        category_name = {"So": "Other Symbol", "Lu": "Uppercase Letter", "Ll": "Lowercase Letter", "Po": "Other Punctuation"}.get(category_code, "Unassigned" if category_code == "Cn" else "Unicode Character")
+        utf16 = character.encode("utf-16-be", errors="surrogatepass").hex(" ").upper() if character else ""
+        utf8 = character.encode("utf-8", errors="surrogatepass").hex(" ").upper() if character else ""
+
+        st.markdown('<div class="unicode-section"><div class="unicode-section-title">Selected Character</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="unicode-preview"><div class="unicode-preview-glyph" style="font-family:{selected_font_family}; transform:rotate({st.session_state.uni_rotation}deg)">{selected_char}</div></div>', unsafe_allow_html=True)
         st.slider("Rotation", -180, 180, key="uni_rotation")
-        st.selectbox(
-            "Character value format",
-            options=["Decimal", "UC32", "UC16/Surrogate Pair"],
-            key="uni_value_format",
-        )
-        st.markdown(
-            f"<div style='text-align:center; font-family:monospace; font-size:20px;'>"
-            f"{format_unicode_value(selected_cp, st.session_state.uni_value_format)}</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="unicode-section"><div class="unicode-section-title">Character Metadata</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="unicode-info-grid"><div><b>Name</b><span>{html.escape(char_name)}</span></div><div><b>Block</b><span>{html.escape(block_name)}</span></div><div><b>Index</b><span>U+{selected_cp:04X}</span></div><div><b>Category</b><span>{category_code} ({category_name})</span></div></div></div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="unicode-section"><div class="unicode-section-title">Character Value</div>', unsafe_allow_html=True)
+        step_col, value_col, copy_col = st.columns([.55, 1.7, .55])
+        if step_col.button("−", key="uni_prev", width="stretch"):
+            st.session_state.uni_selected_char = max(start, selected_cp - 1)
+            st.rerun(scope="fragment")
+        value_col.code(f"U+{selected_cp:04X}")
+        if copy_col.button("Copy", key="uni_copy", width="stretch"):
+            st.toast(f"{unicode_glyph(selected_cp)}  U+{selected_cp:04X} ready to copy")
+        if st.button("+", key="uni_next", width="stretch"):
+            st.session_state.uni_selected_char = min(end, selected_cp + 1)
+            st.rerun(scope="fragment")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown(f'<div class="unicode-section"><div class="unicode-section-title">Character Info</div><div class="unicode-info-grid"><div><b>Decimal</b><span>{selected_cp}</span></div><div><b>Unicode (hex)</b><span>0x{selected_cp:X}</span></div><div><b>UTF-16</b><span>{utf16}</span></div><div><b>UTF-8</b><span>{utf8}</span></div></div></div></div>', unsafe_allow_html=True)
 
 
 render_viewer_section(vertices, faces, edge_indices)
-render_unicode_panel()
+if st.session_state.attach_unicode_panel:
+    render_unicode_panel()
 
