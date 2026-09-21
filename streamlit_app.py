@@ -1,4 +1,5 @@
 import html
+import io
 import json
 import math
 import time
@@ -7,6 +8,9 @@ from pathlib import Path
 
 import plotly.graph_objects as go
 import streamlit as st
+from PIL import Image
+
+import picture_sphere
 
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
 
@@ -434,6 +438,8 @@ def build_plotly_figure(
     alpha=0.94,
     flatshading=True,
     show_grid=False,
+    face_colors=None,
+    label_mesh=None,
 ):
     v = rotate_vertices(vertices, angles, scale)
     x = [p[0] for p in v]
@@ -452,6 +458,10 @@ def build_plotly_figure(
             edge_y.extend([v[a][1], v[b][1], None])
             edge_z.extend([v[a][2], v[b][2], None])
 
+    mesh_kwargs = {"facecolor": face_colors} if face_colors is not None else {"color": color}
+    # Painted/photo tile colors must render at full opacity: the client-side alpha slider
+    # blends overlapping faces together and washes out the intended per-tile colors.
+    mesh_opacity = 1.0 if face_colors is not None else alpha
     mesh_trace = go.Mesh3d(
         x=x,
         y=y,
@@ -459,13 +469,13 @@ def build_plotly_figure(
         i=i,
         j=j,
         k=k,
-        color=color,
-        opacity=alpha,
+        opacity=mesh_opacity,
         flatshading=flatshading,
         lighting=dict(ambient=0.7, diffuse=0.8, specular=0.5, roughness=0.5, fresnel=0.2),
         lightposition=dict(x=100, y=200, z=1000),
         hoverinfo="none",
         name="Surface",
+        **mesh_kwargs,
     )
 
     traces = [mesh_trace]
@@ -480,6 +490,25 @@ def build_plotly_figure(
             name="Wireframe",
         )
         traces.append(edge_trace)
+
+    if label_mesh and label_mesh[0] and label_mesh[1]:
+        label_vertices, label_faces, label_colors = label_mesh
+        rotated_labels = rotate_vertices(label_vertices, angles, scale)
+        label_trace = go.Mesh3d(
+            x=[p[0] for p in rotated_labels],
+            y=[p[1] for p in rotated_labels],
+            z=[p[2] for p in rotated_labels],
+            i=[f[0] for f in label_faces],
+            j=[f[1] for f in label_faces],
+            k=[f[2] for f in label_faces],
+            facecolor=label_colors,
+            opacity=1.0,
+            flatshading=True,
+            lighting=dict(ambient=1.0, diffuse=0.0, specular=0.0),
+            hoverinfo="none",
+            name="Tile Labels",
+        )
+        traces.append(label_trace)
 
     fig = go.Figure(data=traces)
     fig.update_layout(
@@ -966,6 +995,105 @@ def build_complex_hex_sphere(
     return final_vertices, final_faces, final_edges
 
 
+def generate_picture_sphere_geometry(s):
+    tile_sig = (s["radius"], s["hex_subdivisions"], s["hex_size_pct"])
+    if st.session_state.get("picture_sphere_tile_sig") != tile_sig:
+        # Tile ids are meaningless across a geometry change (different subdivision/radius), so drop stale paint/anchor state.
+        st.session_state.picture_sphere_tile_sig = tile_sig
+        st.session_state.picture_sphere_tile_colors = {}
+        st.session_state.picture_sphere_anchor_tile_id = 0
+        st.session_state.picture_sphere_tile_labels = {}
+
+    vertices, faces, edges, face_tile_ids, tile_centroids, tile_corner_ids, adjacency = picture_sphere.build_picture_sphere(
+        s["radius"],
+        s["hex_subdivisions"],
+        s["hex_size_pct"],
+    )
+    anchor_tile_id = min(st.session_state.get("picture_sphere_anchor_tile_id", 0), len(tile_centroids) - 1)
+    ring_of_tile, label_of_tile = picture_sphere.compute_tile_rings_and_labels(tile_centroids, adjacency, anchor_tile_id)
+
+    tile_base_colors = None
+    uploaded_image = st.session_state.get("picture_sphere_image_upload")
+    if uploaded_image is not None:
+        try:
+            image = Image.open(io.BytesIO(uploaded_image.getvalue()))
+            tile_base_colors = picture_sphere.sample_tile_colors_from_image(image, tile_centroids)
+        except Exception:
+            tile_base_colors = None
+
+    paint_overrides = st.session_state.setdefault("picture_sphere_tile_colors", {})
+    default_color = "#3568ad"
+    tile_colors = [
+        paint_overrides.get(tile_id, tile_base_colors[tile_id] if tile_base_colors else default_color)
+        for tile_id in range(len(tile_centroids))
+    ]
+
+    # Sparse: only tiles with an assigned character get a decal, built as flat
+    # pixel-quads tangent to that tile (not billboarded text), colored as the
+    # inverse of the tile's own resolved color so it never blends into its background.
+    tile_label_chars = st.session_state.setdefault("picture_sphere_tile_labels", {})
+    num_label_layers = st.session_state.get("picture_sphere_label_layers", 3)
+    label_mesh_vertices, label_mesh_faces, label_mesh_colors = picture_sphere.build_tile_label_decals(
+        tile_label_chars, tile_centroids, adjacency, tile_colors, s["radius"], num_layers=num_label_layers,
+    )
+
+    # Stashed for later phases (viewer facecolor wiring).
+    st.session_state.picture_sphere_tile_data = {
+        "face_tile_ids": face_tile_ids,
+        "tile_centroids": tile_centroids,
+        "tile_corner_ids": tile_corner_ids,
+        "adjacency": adjacency,
+        "anchor_tile_id": anchor_tile_id,
+        "ring_of_tile": ring_of_tile,
+        "label_of_tile": label_of_tile,
+        "tile_base_colors": tile_base_colors,
+        "tile_colors": tile_colors,
+        "label_mesh_vertices": label_mesh_vertices,
+        "label_mesh_faces": label_mesh_faces,
+        "label_mesh_colors": label_mesh_colors,
+    }
+    return vertices, faces, edges
+
+
+def generate_picture_sphere_test_pattern():
+    tile_data = st.session_state.get("picture_sphere_tile_data")
+    if not tile_data:
+        return
+    num_tiles = len(tile_data["tile_centroids"])
+    colors = picture_sphere.generate_test_tile_colors(num_tiles)
+    st.session_state.picture_sphere_tile_colors = dict(enumerate(colors))
+    label_mode = "random" if st.session_state.get("picture_sphere_test_label_mode") == "Random characters" else "alpha"
+    labels = picture_sphere.generate_test_tile_labels(num_tiles, mode=label_mode)
+    st.session_state.picture_sphere_tile_labels = dict(enumerate(labels))
+
+
+def clear_picture_sphere_test_pattern():
+    st.session_state.picture_sphere_tile_colors = {}
+    st.session_state.picture_sphere_tile_labels = {}
+
+
+def paint_selected_picture_sphere_tile():
+    tile_data = st.session_state.get("picture_sphere_tile_data")
+    if not tile_data:
+        return
+    label_to_tile_id = {label: tile_id for tile_id, label in tile_data["label_of_tile"].items()}
+    tile_id = label_to_tile_id.get(st.session_state.get("picture_sphere_target_tile_label"))
+    if tile_id is None:
+        return
+    st.session_state.setdefault("picture_sphere_tile_colors", {})[tile_id] = st.session_state.picture_sphere_paint_color
+    char = st.session_state.get("picture_sphere_paint_character", "").strip().upper()
+    tile_labels = st.session_state.setdefault("picture_sphere_tile_labels", {})
+    if char:
+        tile_labels[tile_id] = char[0]
+    else:
+        tile_labels.pop(tile_id, None)
+
+
+def reset_picture_sphere_paint():
+    st.session_state.picture_sphere_tile_colors = {}
+    st.session_state.picture_sphere_tile_labels = {}
+
+
 def build_cube(size):
     half = size / 2
     vertices = [(-half, -half, -half), (half, -half, -half), (half, half, -half), (-half, half, -half), (-half, -half, half), (half, -half, half), (half, half, half), (-half, half, half)]
@@ -1084,6 +1212,59 @@ OBJECT_REGISTRY = {
             s["hex_subdivisions"],
             s["hex_size_pct"],
         ),
+        "params": {
+            "radius": {
+                "label": "Sphere radius",
+                "type": "slider",
+                "min": 1.0,
+                "max": 12.0,
+                "default": 5.0,
+                "step": 0.5,
+            },
+            "hex_subdivisions": {
+                "label": "Hexagon density (subdivisions)",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+            "hex_size_pct": {
+                "label": "Hexagon size percentage",
+                "type": "slider",
+                "min": 10.0,
+                "max": 100.0,
+                "default": 95.0,
+                "step": 1.0,
+                "format": "%.0f%%",
+            },
+            "thickness": {
+                "label": "Grid thickness",
+                "type": "slider",
+                "min": 1,
+                "max": 8,
+                "default": 3,
+                "step": 1,
+            },
+        },
+        "presets": {
+            "Preset1": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "thickness": 3,
+            },
+            "Preset2": {
+                "radius": 5.0,
+                "hex_subdivisions": 3,
+                "hex_size_pct": 95.0,
+                "thickness": 3,
+            },
+        },
+    },
+    "PictureSphere": {
+        "label": "PictureSphere",
+        "generator": generate_picture_sphere_geometry,
         "params": {
             "radius": {
                 "label": "Sphere radius",
@@ -2144,6 +2325,63 @@ with st.sidebar:
         help="Attach or detach the Unicode character browser below the 3D viewer. Detached by default.",
     )
 
+    if st.session_state.active_object == "PictureSphere":
+        st.divider()
+        st.markdown("### Picture Sphere Image")
+        st.file_uploader(
+            "Upload an image to map onto the sphere",
+            type=["png", "jpg", "jpeg"],
+            key="picture_sphere_image_upload",
+            help="Sampled onto each hex/pentagon tile using an equirectangular projection.",
+        )
+
+        st.markdown("### Tile Inspection & Paintbrush")
+        tile_data = st.session_state.get("picture_sphere_tile_data") or {}
+        label_of_tile = tile_data.get("label_of_tile", {})
+        num_tiles = len(tile_data.get("tile_centroids", []))
+        if num_tiles:
+            st.number_input(
+                "Anchor tile ID",
+                min_value=0,
+                max_value=num_tiles - 1,
+                key="picture_sphere_anchor_tile_id",
+                help="Ring/Sequence addresses (R{ring}-S{seq}) are computed relative to this tile.",
+            )
+            sorted_labels = [label for _, label in sorted(
+                label_of_tile.items(),
+                key=lambda item: (0, 0) if item[1] == "Anchor-0" else (int(item[1].split("-")[0][1:]), int(item[1].split("-")[1][1:])),
+            )]
+            st.selectbox("Target tile (Ring-Sequence)", options=sorted_labels, key="picture_sphere_target_tile_label")
+            st.color_picker("Paint color", value="#3568ad", key="picture_sphere_paint_color")
+            st.text_input(
+                "Character label (optional)",
+                key="picture_sphere_paint_character",
+                max_chars=1,
+                help="Shown on the painted tile in the inverse of the paint color, so it always stays visible.",
+            )
+            st.number_input(
+                "Label layers",
+                min_value=1,
+                max_value=10,
+                value=3,
+                key="picture_sphere_label_layers",
+                help="Stacked flat layers each character decal is built from, just above the tile surface (groundwork for later solid extrusion).",
+            )
+            paint_col1, paint_col2 = st.columns(2)
+            paint_col1.button("Paint Selected Tile", width='stretch', on_click=paint_selected_picture_sphere_tile)
+            paint_col2.button("Reset Paint", width='stretch', on_click=reset_picture_sphere_paint)
+
+            st.markdown("### Test Pattern")
+            st.caption("Fills every tile with a distinct rainbow color and a letter, for visually verifying tile identity/adjacency.")
+            st.selectbox(
+                "Label characters",
+                options=["A-Z (cycling)", "Random characters"],
+                key="picture_sphere_test_label_mode",
+            )
+            test_col1, test_col2 = st.columns(2)
+            test_col1.button("Generate Test Pattern", width='stretch', on_click=generate_picture_sphere_test_pattern)
+            test_col2.button("Clear Test Pattern", width='stretch', on_click=clear_picture_sphere_test_pattern)
+
     st.divider()
     st.markdown("### Export OBJ")
     active_meta = {
@@ -2193,6 +2431,35 @@ with st.sidebar:
             except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
                 st.error("Invalid recipe file. Please upload a valid HexSphere recipe .json.")
 
+
+def resolve_active_face_colors(faces):
+    """Per-face color list for PictureSphere (painted/image tile colors), else None for the default uniform color."""
+    if st.session_state.active_object != "PictureSphere":
+        return None
+    tile_data = st.session_state.get("picture_sphere_tile_data")
+    if not tile_data:
+        return None
+    tile_colors = tile_data.get("tile_colors")
+    face_tile_ids = tile_data.get("face_tile_ids")
+    if not tile_colors or not face_tile_ids or len(face_tile_ids) != len(faces):
+        return None
+    return [tile_colors[tile_id] for tile_id in face_tile_ids]
+
+
+def resolve_active_label_mesh():
+    """(vertices, faces, colors) for the PictureSphere tile-character decal mesh, else None."""
+    if st.session_state.active_object != "PictureSphere":
+        return None
+    tile_data = st.session_state.get("picture_sphere_tile_data")
+    if not tile_data:
+        return None
+    return (
+        tile_data.get("label_mesh_vertices"),
+        tile_data.get("label_mesh_faces"),
+        tile_data.get("label_mesh_colors"),
+    )
+
+
 @st.fragment
 def render_viewer_section(vertices, faces, edge_indices):
     """Isolated fragment so rotation controls and spin animation only re-render the viewer, not the whole page."""
@@ -2234,9 +2501,12 @@ def render_viewer_section(vertices, faces, edge_indices):
             st.markdown("#### Scale & Appearance")
             st.toggle("Auto-scale", key="vis_auto_scale")
             st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)
-            st.color_picker("Surface color", key="vis_color")
+            is_picture_sphere = st.session_state.active_object == "PictureSphere"
+            st.color_picker("Surface color", key="vis_color", disabled=is_picture_sphere)
             st.selectbox("Material", options=list(MATERIAL_PRESETS.keys()), key="vis_material", on_change=apply_material)
-            st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha")
+            st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha", disabled=is_picture_sphere)
+            if is_picture_sphere:
+                st.caption("Surface color and Alpha are driven by each tile's paint/photo color for PictureSphere and always render at full opacity.")
             st.toggle("Show grid", key="vis_show_grid")
             st.toggle("Flat shading", key="vis_flatshading")
 
@@ -2265,6 +2535,8 @@ def render_viewer_section(vertices, faces, edge_indices):
                 alpha=st.session_state.vis_alpha,
                 flatshading=st.session_state.vis_flatshading,
                 show_grid=st.session_state.vis_show_grid,
+                face_colors=resolve_active_face_colors(faces),
+                label_mesh=resolve_active_label_mesh(),
             )
             st.plotly_chart(fig, width='stretch')
 
@@ -2285,6 +2557,8 @@ def render_viewer_section(vertices, faces, edge_indices):
             alpha=st.session_state.vis_alpha,
             flatshading=st.session_state.vis_flatshading,
             show_grid=st.session_state.vis_show_grid,
+            face_colors=resolve_active_face_colors(faces),
+            label_mesh=resolve_active_label_mesh(),
         )
         st.plotly_chart(fig, width='stretch')
 
@@ -2296,6 +2570,9 @@ def render_unicode_panel():
     st.session_state.setdefault("uni_category_idx", default_block_idx)
     st.session_state.setdefault("uni_selected_char", 0x2600)
     st.session_state.setdefault("uni_rotation", 0)
+    st.session_state.setdefault("uni_flip_h", False)
+    st.session_state.setdefault("uni_flip_v", False)
+    st.session_state.setdefault("uni_axis_x", 0)
     st.session_state.setdefault("uni_font", "Segoe UI Symbol — symbols and math")
     st.session_state.setdefault("uni_search_text", "")
     st.session_state.setdefault("uni_search_match_count", None)
@@ -2331,11 +2608,23 @@ def render_unicode_panel():
         .unicode-preview {
             align-items: center; background: #101827; border: 1px solid #3c4b64;
             border-radius: 7px; display: flex; height: 174px; justify-content: center;
-            margin-bottom: .65rem; overflow: hidden;
+            margin-bottom: .65rem; overflow: hidden; position: relative;
         }
         .unicode-preview-glyph {
-            color: #f7f9ff;
-            font-size: 7rem; line-height: 1; transform-origin: center;
+            color: #f7f9ff; position: relative; z-index: 2;
+            font-size: 7rem; line-height: 1; transform-origin: center center;
+        }
+        .unicode-axis-h {
+            position: absolute; left: 0; right: 0; top: 50%; height: 1px;
+            background: rgba(120, 168, 255, .28); z-index: 1;
+        }
+        .unicode-axis-v {
+            position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+            background: rgba(120, 168, 255, .28); z-index: 1;
+        }
+        .unicode-axis-rotation {
+            position: absolute; top: 0; bottom: 0; width: 1px;
+            background: rgba(255, 40, 40, .55); z-index: 1;
         }
         .unicode-info-grid { display: grid; gap: .5rem 1rem; grid-template-columns: 1fr 1fr; }
         .unicode-info-grid div { border-bottom: 1px solid #2d3a50; padding: .35rem 0; }
@@ -2353,7 +2642,6 @@ def render_unicode_panel():
         .unicode-axis { color: #8d9cb2; font-family: monospace; font-size: .7rem; text-align: center; }
         .unicode-selected [data-testid="stButton"] > button { background: #3568ad; border-color: #8bb8ff; }
         @media (max-width: 900px) { .unicode-info-grid { grid-template-columns: 1fr; } }
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -2431,8 +2719,30 @@ def render_unicode_panel():
         utf8 = character.encode("utf-8", errors="surrogatepass").hex(" ").upper() if character else ""
 
         st.markdown('<div class="unicode-section"><div class="unicode-section-title">Selected Character</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="unicode-preview"><div class="unicode-preview-glyph" style="font-family:{selected_font_family}; transform:rotate({st.session_state.uni_rotation}deg)">{selected_char}</div></div>', unsafe_allow_html=True)
+        preview_font_size_rem = 7
+        axis_limit_px = int(2 * preview_font_size_rem * 16)
+        transform = (
+            f"translateX({st.session_state.uni_axis_x}px) "
+            f"rotate({st.session_state.uni_rotation}deg) "
+            f"scaleX({-1 if st.session_state.uni_flip_h else 1}) "
+            f"scaleY({-1 if st.session_state.uni_flip_v else 1})"
+        )
+        glyph_style = html.escape(f"font-family:{selected_font_family}; transform:{transform}", quote=True)
+        st.markdown(
+            f'<div class="unicode-preview">'
+            f'<div class="unicode-axis-h"></div>'
+            f'<div class="unicode-axis-v"></div>'
+            f'<div class="unicode-axis-rotation" style="left:calc(50% + {st.session_state.uni_axis_x}px)"></div>'
+            f'<div class="unicode-preview-glyph" style="{glyph_style}">{selected_char}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         st.slider("Rotation", -180, 180, key="uni_rotation")
+        flip_col1, flip_col2 = st.columns(2)
+        flip_col1.toggle("Horizontal Flip", key="uni_flip_h")
+        flip_col2.toggle("Vertical Flip", key="uni_flip_v")
+        st.slider("Rotation Axis Position", -axis_limit_px, axis_limit_px, key="uni_axis_x",
+                   help="Horizontal placement of the red rotation-axis line, in pixels from center.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="unicode-section"><div class="unicode-section-title">Character Metadata</div>', unsafe_allow_html=True)

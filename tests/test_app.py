@@ -219,3 +219,115 @@ def test_user_presets_save_and_apply():
     assert "on_click=apply_user_preset" in source
 
 
+def test_picture_sphere_registered_and_unaffected_others():
+    registry = streamlit_app.OBJECT_REGISTRY
+    assert "PictureSphere" in registry
+    picture_params = registry["PictureSphere"]["params"]
+    for key in ("radius", "hex_subdivisions", "hex_size_pct", "thickness"):
+        assert key in picture_params
+
+    # SimpleHexShpere/AdvancedHexSphere geometry must be unaffected by PictureSphere work.
+    v1, f1, e1 = streamlit_app.build_hex_sphere(radius=5.0, hex_subdivisions=1, hex_size_pct=90.0)
+    assert len(v1) == 60 and len(f1) == 36 and len(e1) == 60
+
+
+def test_picture_sphere_tile_grouping_and_adjacency():
+    picture_sphere = streamlit_app.picture_sphere
+    for n, expected in ((1, (60, 36, 60, 12)), (2, (240, 156, 240, 42)), (3, (540, 356, 540, 92))):
+        vertices, faces, edges, face_tile_ids, tile_centroids, tile_corner_ids, adjacency = picture_sphere.build_picture_sphere(
+            radius=5.0, hex_subdivisions=n, hex_size_pct=95.0,
+        )
+        exp_v, exp_f, exp_e, exp_tiles = expected
+        assert len(vertices) == exp_v and len(faces) == exp_f and len(edges) == exp_e
+        assert len(tile_centroids) == exp_tiles
+        assert len(face_tile_ids) == len(faces)
+        pentagons = sum(1 for corners in tile_corner_ids if len(corners) == 5)
+        assert pentagons == 12
+        # Every tile's adjacency degree must equal its own corner count (icosahedral dual graph invariant).
+        assert all(len(adjacency[t]) == len(tile_corner_ids[t]) for t in range(exp_tiles))
+
+
+def test_picture_sphere_ring_sequence_labels():
+    picture_sphere = streamlit_app.picture_sphere
+    _, _, _, _, tile_centroids, _, adjacency = picture_sphere.build_picture_sphere(radius=5.0, hex_subdivisions=2, hex_size_pct=95.0)
+    ring_of_tile, label_of_tile = picture_sphere.compute_tile_rings_and_labels(tile_centroids, adjacency, anchor_tile_id=0)
+    assert ring_of_tile[0] == 0
+    assert label_of_tile[0] == "Anchor-0"
+    assert all(r is not None for r in ring_of_tile)
+    labels = list(label_of_tile.values())
+    assert len(labels) == len(set(labels))
+    assert len(labels) == len(tile_centroids)
+
+
+def test_picture_sphere_image_sampling():
+    from PIL import Image
+
+    picture_sphere = streamlit_app.picture_sphere
+    _, _, _, _, tile_centroids, _, _ = picture_sphere.build_picture_sphere(radius=5.0, hex_subdivisions=2, hex_size_pct=95.0)
+
+    image = Image.new("RGB", (64, 32))
+    pixels = image.load()
+    for x in range(64):
+        for y in range(32):
+            pixels[x, y] = (255, 0, 0) if y < 16 else (0, 0, 255)
+
+    colors = picture_sphere.sample_tile_colors_from_image(image, tile_centroids)
+    assert len(colors) == len(tile_centroids)
+    north_idx = max(range(len(tile_centroids)), key=lambda i: tile_centroids[i][2])
+    south_idx = min(range(len(tile_centroids)), key=lambda i: tile_centroids[i][2])
+    assert colors[north_idx] == "#ff0000"
+    assert colors[south_idx] == "#0000ff"
+
+
+def test_picture_sphere_invert_hex_color():
+    picture_sphere = streamlit_app.picture_sphere
+    assert picture_sphere.invert_hex_color("#00ff00") == "#ff00ff"
+    assert picture_sphere.invert_hex_color("#000000") == "#ffffff"
+
+
+def test_picture_sphere_test_pattern_helpers():
+    picture_sphere = streamlit_app.picture_sphere
+    colors = picture_sphere.generate_test_tile_colors(12)
+    assert len(colors) == 12 and len(set(colors)) == 12
+
+    labels_alpha = picture_sphere.generate_test_tile_labels(28, mode="alpha")
+    assert labels_alpha[0] == "A" and labels_alpha[26] == "A"
+    labels_random = picture_sphere.generate_test_tile_labels(5, mode="random", seed=1)
+    assert len(labels_random) == 5 and all(c.isalpha() for c in labels_random)
+
+
+def test_picture_sphere_label_decal_straddles_surface():
+    picture_sphere = streamlit_app.picture_sphere
+    _, _, _, _, tile_centroids, _, adjacency = picture_sphere.build_picture_sphere(radius=5.0, hex_subdivisions=3, hex_size_pct=95.0)
+    vertices, faces = picture_sphere.build_tile_label_decal(0, "A", tile_centroids, adjacency, radius=5.0, num_layers=3)
+    assert faces
+    radii = sorted({round(sum(c * c for c in pt) ** 0.5, 4) for pt in vertices})
+    assert len(radii) == 6
+    assert sum(1 for r in radii if r < 5.0) == 3
+    assert sum(1 for r in radii if r > 5.0) == 3
+    assert 5.0 not in radii
+
+
+def test_picture_sphere_paint_and_face_color_resolution():
+    import streamlit as st
+
+    st.session_state.active_object = "PictureSphere"
+    picture_sphere = streamlit_app.picture_sphere
+    _, faces, _, face_tile_ids, tile_centroids, _, _ = picture_sphere.build_picture_sphere(radius=5.0, hex_subdivisions=2, hex_size_pct=95.0)
+
+    st.session_state.picture_sphere_tile_data = {
+        "tile_colors": ["#3568ad"] * len(tile_centroids),
+        "face_tile_ids": face_tile_ids,
+    }
+    st.session_state.picture_sphere_tile_data["tile_colors"][5] = "#ff0000"
+
+    face_colors = streamlit_app.resolve_active_face_colors(faces)
+    assert len(face_colors) == len(faces)
+    painted_faces = [i for i, tid in enumerate(face_tile_ids) if tid == 5]
+    assert all(face_colors[i] == "#ff0000" for i in painted_faces)
+
+    # Non-PictureSphere objects must fall back to the uniform-color path (None).
+    st.session_state.active_object = "AdvancedHexSphere"
+    assert streamlit_app.resolve_active_face_colors(faces) is None
+
+
