@@ -49,12 +49,16 @@ name = "blank-app-template"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "jsonschema" },
+    { name = "pillow" },
     { name = "plotly" },
     { name = "streamlit" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "jsonschema", specifier = ">=4.25.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
     { name = "plotly", specifier = ">=6.3.0" },
     { name = "streamlit", specifier = ">=1.61.1" },
 ]

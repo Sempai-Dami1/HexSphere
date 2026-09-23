@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hexsphere.object-recipe/0.1",
+  "title": "HexSphere Object Recipe 0.1",
+  "type": "object",
+  "required": ["format", "version", "object"],
+  "properties": {
+    "format": {"const": "hexsphere.object-recipe"},
+    "version": {"const": "0.1"},
+    "object": {"$ref": "#/$defs/object"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "finiteNumber": {
+      "type": "number",
+      "minimum": -1000000,
+      "maximum": 1000000
+    },
+    "vector3": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/finiteNumber"},
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "parameterReference": {
+      "type": "object",
+      "required": ["$ref"],
+      "properties": {
+        "$ref": {
+          "type": "string",
+          "pattern": "^parameters\\.[A-Za-z_][A-Za-z0-9_]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "parameterValue": {
+      "anyOf": [
+        {"type": "string"},
+        {"type": "number", "minimum": -1000000, "maximum": 1000000},
+        {"type": "boolean"},
+        {"$ref": "#/$defs/parameterReference"}
+      ]
+    },
+    "transform": {
+      "type": "object",
+      "properties": {
+        "position": {"$ref": "#/$defs/vector3"},
+        "rotation": {"$ref": "#/$defs/vector3"},
+        "scale": {"$ref": "#/$defs/vector3"}
+      },
+      "additionalProperties": false
+    },
+    "part": {
+      "type": "object",
+      "required": ["id", "type", "parameters", "transform"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$",
+          "maxLength": 80
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/parameterValue"}
+        },
+        "transform": {"$ref": "#/$defs/transform"}
+      },
+      "additionalProperties": false
+    },
+    "object": {
+      "type": "object",
+      "required": ["name", "parameters", "parts"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 160},
+        "parameters": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_]*$"},
+          "additionalProperties": {
+            "anyOf": [
+              {"type": "string"},
+              {"type": "number", "minimum": -1000000, "maximum": 1000000},
+              {"type": "boolean"}
+            ]
+          }
+        },
+        "parts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/part"}
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
