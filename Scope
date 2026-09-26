@@ -2,3 +2,50 @@
 
 the Scope of this app is to generate object files, view them, export them
 
+Object Recipe Phase 3 Complete — Relationships and Reuse
+
+Implemented recipe v0.3 as a declarative relationship/reuse layer.
+
+Added:
+- Versioned v0.3 JSON Schema
+- Safe arithmetic expressions and parameter references
+- Dimension-derived transforms, offsets, and anchors
+- Reusable components
+- Explicit exposed anchors
+- Nested component instances
+- Bounded linear replication
+- Bounded radial replication
+- Four-torus pyramid assembly test
+- Continued use of OBJECT_REGISTRY for geometry generation
+- Preserved v0.1 and v0.2 compatibility
+
+Validation:
+- 20 Object Recipe tests passed
+- 38 total tests passed
+- Python compilation passed
+- Schema validation passed
+- No diagnostics found
+
+Architecture:
+- v0.3 flattens reusable components/instances into the
+  established v0.2 part/anchor/connection pipeline.
+- Primitive generators remain the source of geometry.
+- No arbitrary executable recipe content was introduced.
+
+Intentionally deferred:
+- Orientation-aware snapping
+- Anchor rotation behavior
+- Curves/profiles
+- Extrusion/revolution
+- Boolean geometry
+- Physics
+- Animation
+- Full recipe authoring UI
+- Roblox integration
+- GLB/GLTF export
+
+Important:
+The earlier Phase 3 proposal identified orientation-aware snapping
+as a possible next capability. It was not implemented in this
+checkpoint and should be treated as a future phase rather than
+assumed to be present.

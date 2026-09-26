@@ -402,3 +402,164 @@ def test_v03_pyramid_reuses_torus_component_four_times():
         ring = next(part for part in parts if part.part_id == f"{name}.ring")
         center = [sum(vertex[axis] for vertex in ring.vertices) / len(ring.vertices) for axis in range(3)]
         assert center == pytest.approx(list(position), abs=1e-9)
+
+
+def v04_recipe(parts, connections):
+    return {
+        "format": "hexsphere.object-recipe",
+        "version": "0.4",
+        "object": {
+            "name": "Phase 4 orientation assembly",
+            "parameters": {},
+            "parts": parts,
+            "connections": connections,
+        },
+    }
+
+
+def oriented_connection_parts():
+    return [
+        {
+            "id": "target",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 2.0, "thickness": 1},
+            "transform": {"rotation": [10.0, 20.0, 30.0], "scale": [2.0, 1.0, 1.0]},
+            "anchors": [{
+                "name": "socket",
+                "parent": "main",
+                "local_position": [0.0, 2.0, 0.0],
+                "local_rotation": [5.0, 0.0, 15.0],
+            }],
+        },
+        {
+            "id": "source",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 2.0, "thickness": 1},
+            "transform": {"rotation": [25.0, 35.0, 45.0], "scale": [1.0, 2.0, 1.0]},
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, -1.0, 0.0],
+                "local_rotation": [15.0, 10.0, 20.0],
+            }],
+        },
+    ]
+
+
+def test_v04_snap_uses_the_approved_rotation_equation():
+    rotation_offset = [7.0, 11.0, 13.0]
+    parts = oriented_connection_parts()
+    value = v04_recipe(
+        parts,
+        [{
+            "id": "source-on-target",
+            "part": "source",
+            "anchor": "mount",
+            "target": {"part": "target", "anchor": "socket"},
+            "mode": "snap",
+            "rotation_offset": rotation_offset,
+            "offset": [0.0, 0.5, 0.0],
+            "offset_space": "target",
+        }],
+    )
+    built = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert len(built) == 2
+
+    source_part = parts[1]
+    target_part = parts[0]
+    p = object_recipe._rotation_matrix(source_part["transform"]["rotation"])
+    s = object_recipe._rotation_matrix(source_part["anchors"][0]["local_rotation"])
+    target_transform = object_recipe._rotation_matrix(target_part["transform"]["rotation"])
+    target_anchor = object_recipe._rotation_matrix(target_part["anchors"][0]["local_rotation"])
+    t = object_recipe._matrix_multiply(target_transform, target_anchor)
+    o = object_recipe._rotation_matrix(rotation_offset)
+    a = object_recipe._matrix_multiply(p, s)
+    result = object_recipe._matrix_multiply(
+        object_recipe._matrix_multiply(t, o),
+        object_recipe._matrix_multiply(object_recipe._matrix_transpose(a), p),
+    )
+    actual_frame = object_recipe._matrix_multiply(result, s)
+    expected_frame = object_recipe._matrix_multiply(t, o)
+    for actual_row, expected_row in zip(actual_frame, expected_frame):
+        assert actual_row == pytest.approx(expected_row, abs=1e-9)
+
+    # The non-zero source rotation and anchor rotation affect the calculated
+    # source frame, while the final source frame matches target plus offset.
+    assert result != p
+
+
+def test_v04_snap_aligns_position_using_final_rotation_and_target_offset():
+    parts = oriented_connection_parts()
+    value = v04_recipe(
+        parts,
+        [{
+            "id": "source-on-target",
+            "part": "source",
+            "anchor": "mount",
+            "target": {"part": "target", "anchor": "socket"},
+            "mode": "snap",
+            "rotation_offset": [0.0, 0.0, 0.0],
+            "offset": [0.0, 0.5, 0.0],
+            "offset_space": "target",
+        }],
+    )
+    built = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    target_vertices, _, _ = streamlit_app.build_cube(2.0)
+    source_vertices, _, _ = streamlit_app.build_cube(2.0)
+    target_local = object_recipe._resolve_v04_local_anchors(parts[0], target_vertices)["socket"]
+    source_local = object_recipe._resolve_v04_local_anchors(parts[1], source_vertices)["mount"]
+    target_rotation = object_recipe._rotation_matrix(parts[0]["transform"]["rotation"])
+    target_world_rotation = object_recipe._matrix_multiply(target_rotation, target_local.rotation)
+    target_world_position = object_recipe._v04_world_point(
+        target_local.position,
+        {"position": [0.0, 0.0, 0.0], "rotation": target_rotation, "scale": [2.0, 1.0, 1.0]},
+    )
+    expected_target = tuple(
+        target_world_position[index] + object_recipe._matrix_vector(target_world_rotation, [0.0, 0.5, 0.0])[index]
+        for index in range(3)
+    )
+    source = next(part for part in built if part.part_id == "source")
+    source_rotation = object_recipe._rotation_matrix(parts[1]["transform"]["rotation"])
+    source_current = object_recipe._matrix_multiply(source_rotation, source_local.rotation)
+    result_rotation = object_recipe._matrix_multiply(
+        object_recipe._matrix_multiply(target_world_rotation, object_recipe._rotation_matrix([0, 0, 0])),
+        object_recipe._matrix_multiply(object_recipe._matrix_transpose(source_current), source_rotation),
+    )
+    source_anchor_world = object_recipe._matrix_vector(result_rotation, [0.0, -2.0, 0.0])
+    translation = [expected_target[index] - source_anchor_world[index] for index in range(3)]
+    expected_vertices = [
+        object_recipe._v04_world_point(
+            vertex,
+            {"position": translation, "rotation": result_rotation, "scale": [1.0, 2.0, 1.0]},
+        )
+        for vertex in source_vertices
+    ]
+    for actual, expected in zip(source.vertices, expected_vertices):
+        assert actual == pytest.approx(expected, abs=1e-9)
+    assert source_local.position == pytest.approx([0.0, -1.0, 0.0])
+
+
+def test_v04_position_mode_remains_translation_only():
+    parts = oriented_connection_parts()
+    v04_value = v04_recipe(
+        parts,
+        [{
+            "id": "source-on-target",
+            "part": "source",
+            "anchor": "mount",
+            "target": {"part": "target", "anchor": "socket"},
+            "mode": "position",
+            "offset": [0.0, 0.5, 0.0],
+            "offset_space": "world",
+        }],
+    )
+    v03_value = dict(v04_value)
+    v03_value["version"] = "0.3"
+    v03_value["object"] = dict(v04_value["object"])
+    v03_value["object"]["connections"] = [dict(v04_value["object"]["connections"][0])]
+    v03_value["object"]["connections"][0].pop("offset_space")
+    v04_parts = object_recipe.build_recipe_parts(v04_value, streamlit_app.OBJECT_REGISTRY)
+    v03_parts = object_recipe.build_recipe_parts(v03_value, streamlit_app.OBJECT_REGISTRY)
+    for v04_part, v03_part in zip(v04_parts, v03_parts):
+        for actual, expected in zip(v04_part.vertices, v03_part.vertices):
+            assert actual == pytest.approx(expected, abs=1e-9)

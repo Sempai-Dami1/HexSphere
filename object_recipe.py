@@ -15,9 +15,11 @@ RECIPE_FORMAT = "hexsphere.object-recipe"
 RECIPE_VERSION = "0.1"
 RECIPE_VERSION_V02 = "0.2"
 RECIPE_VERSION_V03 = "0.3"
+RECIPE_VERSION_V04 = "0.4"
 SCHEMA_PATH = Path(__file__).with_name("object_recipe_schema.json")
 SCHEMA_PATH_V02 = Path(__file__).with_name("object_recipe_schema_v02.json")
 SCHEMA_PATH_V03 = Path(__file__).with_name("object_recipe_schema_v03.json")
+SCHEMA_PATH_V04 = Path(__file__).with_name("object_recipe_schema_v04.json")
 MAX_RECIPE_BYTES = 1_000_000
 MAX_PARTS = 64
 MAX_NESTING_DEPTH = 4
@@ -50,10 +52,12 @@ def _load_schema(path: Path = SCHEMA_PATH) -> dict[str, Any]:
 RECIPE_SCHEMA = _load_schema()
 RECIPE_SCHEMA_V02 = _load_schema(SCHEMA_PATH_V02)
 RECIPE_SCHEMA_V03 = _load_schema(SCHEMA_PATH_V03)
+RECIPE_SCHEMA_V04 = _load_schema(SCHEMA_PATH_V04)
 _RECIPE_VALIDATORS = {
     RECIPE_VERSION: Draft202012Validator(RECIPE_SCHEMA),
     RECIPE_VERSION_V02: Draft202012Validator(RECIPE_SCHEMA_V02),
     RECIPE_VERSION_V03: Draft202012Validator(RECIPE_SCHEMA_V03),
+    RECIPE_VERSION_V04: Draft202012Validator(RECIPE_SCHEMA_V04),
 }
 
 
@@ -89,6 +93,8 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
     if version == RECIPE_VERSION_V02:
         _validate_v02_relationships(recipe)
     if version == RECIPE_VERSION_V03:
+        _validate_v03_relationships(recipe)
+    if version == RECIPE_VERSION_V04:
         _validate_v03_relationships(recipe)
     return deepcopy(dict(recipe))
 
@@ -480,7 +486,19 @@ def _prefix_anchor(anchor: Mapping[str, Any], scopes: Mapping[str, Mapping[str, 
     return copied
 
 
-def _compose_v03_transforms(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> dict[str, list[float]]:
+def _compose_v03_transforms(outer: Mapping[str, Any], inner: Mapping[str, Any], matrix_mode: bool = False) -> dict[str, Any]:
+    if matrix_mode:
+        outer_rotation = outer.get("_rotation_matrix", _rotation_matrix(outer["rotation"]))
+        inner_rotation = inner.get("_rotation_matrix", _rotation_matrix(inner["rotation"]))
+        scaled_position = [inner["position"][index] * outer["scale"][index] for index in range(3)]
+        inner_position = _matrix_vector(outer_rotation, scaled_position)
+        result = {
+            "position": [inner_position[index] + outer["position"][index] for index in range(3)],
+            "rotation": [outer["rotation"][index] + inner["rotation"][index] for index in range(3)],
+            "scale": [outer["scale"][index] * inner["scale"][index] for index in range(3)],
+            "_rotation_matrix": _matrix_multiply(outer_rotation, inner_rotation),
+        }
+        return result
     inner_position = _transform_point(inner["position"], outer)
     return {
         "position": list(inner_position),
@@ -498,6 +516,7 @@ def _expand_v03_component(
     top_parameters: Mapping[str, Any],
     components: Mapping[str, Any],
     depth: int,
+    matrix_mode: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, tuple[str, str]]]:
     if depth > MAX_V03_COMPONENT_DEPTH:
         raise RecipeError("Component nesting exceeds the Phase 3 limit.")
@@ -510,7 +529,7 @@ def _expand_v03_component(
         copied = dict(part)
         copied["id"] = part_id
         copied["parameters"] = parameters
-        copied["transform"] = _compose_v03_transforms(instance_transform, _v03_transform(part.get("transform", {}), scopes, {}, part_id))
+        copied["transform"] = _compose_v03_transforms(instance_transform, _v03_transform(part.get("transform", {}), scopes, {}, part_id), matrix_mode)
         copied["anchors"] = [_prefix_anchor(anchor, scopes, {}, f"{part_id}.anchors[{index}]") for index, anchor in enumerate(part.get("anchors", []))]
         parts.append(copied)
     connections = []
@@ -536,10 +555,12 @@ def _expand_v03_component(
         nested_transform = _compose_v03_transforms(
             instance_transform,
             _v03_transform(nested.get("transform", {}), nested_scopes, {}, f"{instance_id}.{nested['id']}"),
+            matrix_mode,
         )
         nested_parts, nested_connections, nested_anchors = _expand_v03_component(
             nested["component"], nested_component, f"{instance_id}.{nested['id']}", resolved_nested,
             nested_transform, top_parameters, components, depth + 1,
+            matrix_mode,
         )
         parts.extend(nested_parts)
         connections.extend(nested_connections)
@@ -563,6 +584,7 @@ def _radial_position(center: list[float], radius: float, angle: float) -> list[f
 
 def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
     obj = recipe["object"]
+    matrix_mode = recipe.get("version") == RECIPE_VERSION_V04
     top_parameters = _resolve_v03_mapping(obj.get("parameters", {}), {"root": obj.get("parameters", {})}, "object.parameters")
     flat_parts = []
     flat_connections = []
@@ -572,6 +594,8 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
         copied = dict(part)
         copied["parameters"] = {name: _resolve_v03_value(value, scopes, {}, f"{part['id']}.parameters.{name}") for name, value in part["parameters"].items()}
         copied["transform"] = dict(part.get("transform", {}))
+        if matrix_mode:
+            copied["transform"]["_rotation_matrix"] = _rotation_matrix(copied["transform"].get("rotation", [0, 0, 0]))
         copied["anchors"] = [dict(anchor) for anchor in part.get("anchors", [])]
         flat_parts.append(copied)
     for instance in obj.get("instances", []):
@@ -581,7 +605,10 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
         merged = {name: parameters.get(name, value) for name, value in component_defaults.items()}
         merged.update(parameters)
         resolved_instance_parameters = _resolve_v03_mapping(merged, scopes, f"instance.{instance['id']}.parameters")
-        parts, connections, exposed = _expand_v03_component(instance["component"], component, instance["id"], resolved_instance_parameters, _v03_transform(instance.get("transform", {}), scopes, {}, instance["id"]), top_parameters, obj["components"], 1)
+        instance_transform = _v03_transform(instance.get("transform", {}), scopes, {}, instance["id"])
+        if matrix_mode:
+            instance_transform["_rotation_matrix"] = _rotation_matrix(instance_transform["rotation"])
+        parts, connections, exposed = _expand_v03_component(instance["component"], component, instance["id"], resolved_instance_parameters, instance_transform, top_parameters, obj["components"], 1, matrix_mode)
         flat_parts.extend(parts)
         flat_connections.extend(connections)
         for name, endpoint in exposed.items():
@@ -611,9 +638,11 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
                 step = float(_resolve_v03_value(replication.get("angle_step", 360.0 / replication["count"]), scopes, {}, f"{replication['id']}.angle_step"))
                 transform["position"] = _radial_position(center, radius, start + index * step)
                 transform["rotation"] = [transform["rotation"][0], transform["rotation"][1] + start + index * step, transform["rotation"][2]]
+            if matrix_mode:
+                transform["_rotation_matrix"] = _rotation_matrix(transform["rotation"])
             component = obj["components"][replication["component"]]
             parameters = _resolve_v03_mapping(replication.get("parameters", {}), scopes, f"{instance_id}.parameters")
-            parts, connections, exposed = _expand_v03_component(replication["component"], component, instance_id, parameters, transform, top_parameters, obj["components"], 1)
+            parts, connections, exposed = _expand_v03_component(replication["component"], component, instance_id, parameters, transform, top_parameters, obj["components"], 1, matrix_mode)
             flat_parts.extend(parts)
             flat_connections.extend(connections)
             for name, endpoint in exposed.items():
@@ -644,7 +673,10 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
                 values = [float(vertex[axis]) for vertex in vertices]
                 dimensions[f"parts.{part['id']}.dimensions.{name}"] = max(values) - min(values)
     for part in flat_parts:
+        composed_rotation = part["transform"].get("_rotation_matrix") if matrix_mode else None
         part["transform"] = _v03_transform(part.get("transform", {}), scopes, dimensions, part["id"])
+        if composed_rotation is not None:
+            part["transform"]["_rotation_matrix"] = composed_rotation
         if part["id"] in connected_ids:
             part["transform"].pop("position", None)
         part["anchors"] = [
@@ -654,6 +686,8 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     for connection in flat_connections:
         if "offset" in connection:
             connection["offset"] = _v03_vector(connection["offset"], scopes, dimensions, f"{connection['id']}.offset")
+        if "rotation_offset" in connection:
+            connection["rotation_offset"] = _v03_vector(connection["rotation_offset"], scopes, dimensions, f"{connection['id']}.rotation_offset")
     return {
         "format": RECIPE_FORMAT,
         "version": RECIPE_VERSION_V02,
@@ -740,9 +774,205 @@ def _build_v02_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
     return result
 
 
+_Matrix = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+_IDENTITY_MATRIX: _Matrix = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+
+
+def _matrix_multiply(left: _Matrix, right: _Matrix) -> _Matrix:
+    return tuple(
+        tuple(sum(left[row][index] * right[index][column] for index in range(3)) for column in range(3))
+        for row in range(3)
+    )  # type: ignore[return-value]
+
+
+def _matrix_vector(matrix: _Matrix, vector: Any) -> tuple[float, float, float]:
+    return tuple(sum(matrix[row][index] * float(vector[index]) for index in range(3)) for row in range(3))
+
+
+def _matrix_transpose(matrix: _Matrix) -> _Matrix:
+    return tuple(tuple(matrix[column][row] for column in range(3)) for row in range(3))  # type: ignore[return-value]
+
+
+def _rotation_matrix(angles: Any) -> _Matrix:
+    result = _IDENTITY_MATRIX
+    for axis_a, axis_b, degrees in ((0, 1, angles[0]), (1, 2, angles[1]), (2, 0, angles[2])):
+        radians = math.radians(float(degrees))
+        cosine, sine = math.cos(radians), math.sin(radians)
+        rotation = [list(row) for row in _IDENTITY_MATRIX]
+        rotation[axis_a][axis_a] = cosine
+        rotation[axis_a][axis_b] = -sine
+        rotation[axis_b][axis_a] = sine
+        rotation[axis_b][axis_b] = cosine
+        result = _matrix_multiply(tuple(tuple(row) for row in rotation), result)  # type: ignore[arg-type]
+    return result
+
+
+@dataclass(frozen=True)
+class _FrameAnchor:
+    position: tuple[float, float, float]
+    rotation: _Matrix
+
+
+def _resolve_v04_local_anchors(part: Mapping[str, Any], vertices: list[Any]) -> dict[str, _FrameAnchor]:
+    automatic = _automatic_anchors(vertices)
+    anchors = {name: _FrameAnchor(anchor.position, _IDENTITY_MATRIX) for name, anchor in automatic.items()}
+    declarations = {}
+    for anchor in part.get("anchors", []):
+        name = anchor["name"]
+        if name in _AUTOMATIC_ANCHOR_NAMES:
+            raise RecipeError(f"Custom anchor cannot replace automatic anchor: {part['id']}.{name}")
+        if name in declarations:
+            raise RecipeError(f"Duplicate anchor name: {part['id']}.{name}")
+        declarations[name] = anchor
+
+    resolved_paths = {}
+    resolving = set()
+
+    def resolve_path(name: str) -> str:
+        if name in resolved_paths:
+            return resolved_paths[name]
+        if name in resolving:
+            raise RecipeError(f"Anchor hierarchy contains a cycle for part {part['id']}.")
+        resolving.add(name)
+        parent = declarations[name]["parent"]
+        if parent == "main":
+            path = name
+        else:
+            parent_name = parent.rsplit("/", 1)[-1]
+            if parent_name not in declarations:
+                raise RecipeError(f"Unknown anchor parent: {part['id']}.{parent}")
+            parent_path = resolve_path(parent_name)
+            if parent != parent_path:
+                raise RecipeError(f"Anchor parent path does not match hierarchy: {part['id']}.{parent}")
+            path = f"{parent_path}/{name}"
+            if path.count("/") + 1 > MAX_NESTING_DEPTH:
+                raise RecipeError(f"Anchor hierarchy exceeds maximum depth for part {part['id']}.")
+        resolving.remove(name)
+        resolved_paths[name] = path
+        return path
+
+    for name in declarations:
+        resolve_path(name)
+
+    pending = {resolved_paths[name]: anchor for name, anchor in declarations.items()}
+    while pending:
+        progressed = False
+        for path, anchor in list(pending.items()):
+            parent = anchor["parent"]
+            parent_path = "" if parent == "main" else resolved_paths[parent.rsplit("/", 1)[-1]]
+            if parent != "main" and parent_path not in anchors:
+                continue
+            local_position = tuple(float(value) for value in anchor["local_position"])
+            local_rotation = _rotation_matrix(anchor.get("local_rotation", [0.0, 0.0, 0.0]))
+            parent_anchor = anchors.get(parent_path, anchors["main"])
+            if anchor.get("inherit_orientation", True):
+                position = tuple(parent_anchor.position[index] + _matrix_vector(parent_anchor.rotation, local_position)[index] for index in range(3))
+                rotation = _matrix_multiply(parent_anchor.rotation, local_rotation)
+            else:
+                position = tuple(parent_anchor.position[index] + _matrix_vector(parent_anchor.rotation, local_position)[index] for index in range(3))
+                rotation = local_rotation
+            anchors[path] = _FrameAnchor(position, rotation)
+            del pending[path]
+            progressed = True
+        if not progressed:
+            raise RecipeError(f"Anchor hierarchy contains a cycle for part {part['id']}.")
+    return anchors
+
+
+def _v04_world_point(point: Any, transform: Mapping[str, Any]) -> tuple[float, float, float]:
+    scaled = [float(point[index]) * float(transform["scale"][index]) for index in range(3)]
+    rotated = _matrix_vector(transform["rotation"], scaled)
+    return tuple(rotated[index] + float(transform["position"][index]) for index in range(3))
+
+
+def _v04_anchor_world(anchor: _FrameAnchor, transform: Mapping[str, Any]) -> _FrameAnchor:
+    return _FrameAnchor(
+        _v04_world_point(anchor.position, transform),
+        _matrix_multiply(transform["rotation"], anchor.rotation),
+    )
+
+
+def _v04_connection_vector(value: Any, location: str) -> list[float]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise RecipeError(f"Expected a three-dimensional vector at {location}.")
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) for item in value):
+        raise RecipeError(f"Vector must contain finite numbers at {location}.")
+    return [float(item) for item in value]
+
+
+def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
+    flattened = _flatten_v03_recipe(recipe, registry)
+    _validate_v02_relationships(flattened)
+    part_definitions = {part["id"]: part for part in flattened["object"]["parts"]}
+    local_data = {}
+    for part in flattened["object"]["parts"]:
+        config = registry.get(part["type"])
+        parameters = resolve_part_parameters(flattened, part, registry)
+        vertices, faces, edges = config["generator"](parameters)
+        local_data[part["id"]] = {
+            "vertices": vertices,
+            "faces": [tuple(face) for face in faces],
+            "edges": [tuple(edge) for edge in edges],
+            "anchors": _resolve_v04_local_anchors(part, vertices),
+        }
+
+    connections = {connection["part"]: connection for connection in flattened["object"].get("connections", [])}
+    world_transforms: dict[str, dict[str, Any]] = {}
+    for part_id in _part_order(flattened):
+        part = part_definitions[part_id]
+        explicit = part.get("transform", {})
+        scale = [float(value) for value in explicit.get("scale", [1.0, 1.0, 1.0])]
+        if any(value == 0 for value in scale):
+            raise RecipeError(f"Part scale cannot contain zero: {part_id}")
+        part_rotation = explicit.get("_rotation_matrix", _rotation_matrix(explicit.get("rotation", [0.0, 0.0, 0.0])))
+        position = [float(value) for value in explicit.get("position", [0.0, 0.0, 0.0])]
+        connection = connections.get(part_id)
+        if connection:
+            target_part = connection["target"]["part"]
+            target_anchor = local_data[target_part]["anchors"].get(connection["target"]["anchor"])
+            source_anchor = local_data[part_id]["anchors"].get(connection["anchor"])
+            if target_anchor is None:
+                raise RecipeError(f"Unknown target anchor: {target_part}.{connection['target']['anchor']}")
+            if source_anchor is None:
+                raise RecipeError(f"Unknown source anchor: {part_id}.{connection['anchor']}")
+            target_world = _v04_anchor_world(target_anchor, world_transforms[target_part])
+            result_rotation = part_rotation
+            if connection["mode"] == "snap":
+                rotation_offset = _rotation_matrix(connection.get("rotation_offset", [0.0, 0.0, 0.0]))
+                source_current = _matrix_multiply(part_rotation, source_anchor.rotation)
+                result_rotation = _matrix_multiply(
+                    _matrix_multiply(target_world.rotation, rotation_offset),
+                    _matrix_multiply(_matrix_transpose(source_current), part_rotation),
+                )
+            source_position = _v04_world_point(source_anchor.position, {"position": [0.0, 0.0, 0.0], "rotation": result_rotation, "scale": scale})
+            offset = _v04_connection_vector(connection.get("offset", [0.0, 0.0, 0.0]), f"{connection['id']}.offset")
+            if connection.get("offset_space", "target") == "target":
+                offset = list(_matrix_vector(target_world.rotation, offset))
+            position = [target_world.position[index] + offset[index] - source_position[index] for index in range(3)]
+            part_rotation = result_rotation
+        world_transforms[part_id] = {"position": position, "rotation": part_rotation, "scale": scale}
+
+    result = []
+    for part in flattened["object"]["parts"]:
+        data = local_data[part["id"]]
+        transform = world_transforms[part["id"]]
+        result.append(
+            RecipePartMesh(
+                part_id=part["id"],
+                object_type=part["type"],
+                vertices=[_v04_world_point(vertex, transform) for vertex in data["vertices"]],
+                faces=data["faces"],
+                edges=data["edges"],
+            )
+        )
+    return result
+
+
 def build_recipe_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
     """Generate each named part using only an existing registry generator."""
     checked_recipe = validate_recipe(recipe)
+    if checked_recipe["version"] == RECIPE_VERSION_V04:
+        return _build_v04_parts(checked_recipe, registry)
     if checked_recipe["version"] == RECIPE_VERSION_V03:
         return _build_v02_parts(_flatten_v03_recipe(checked_recipe, registry), registry)
     if checked_recipe["version"] == RECIPE_VERSION_V02:
