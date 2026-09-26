@@ -14,12 +14,17 @@ from jsonschema import Draft202012Validator
 RECIPE_FORMAT = "hexsphere.object-recipe"
 RECIPE_VERSION = "0.1"
 RECIPE_VERSION_V02 = "0.2"
+RECIPE_VERSION_V03 = "0.3"
 SCHEMA_PATH = Path(__file__).with_name("object_recipe_schema.json")
 SCHEMA_PATH_V02 = Path(__file__).with_name("object_recipe_schema_v02.json")
+SCHEMA_PATH_V03 = Path(__file__).with_name("object_recipe_schema_v03.json")
 MAX_RECIPE_BYTES = 1_000_000
 MAX_PARTS = 64
 MAX_NESTING_DEPTH = 4
 MAX_ABS_NUMBER = 1_000_000.0
+MAX_V03_PARTS = 256
+MAX_V03_COMPONENT_DEPTH = 8
+MAX_V03_REPLICATION = 64
 
 
 class RecipeError(ValueError):
@@ -44,9 +49,11 @@ def _load_schema(path: Path = SCHEMA_PATH) -> dict[str, Any]:
 
 RECIPE_SCHEMA = _load_schema()
 RECIPE_SCHEMA_V02 = _load_schema(SCHEMA_PATH_V02)
+RECIPE_SCHEMA_V03 = _load_schema(SCHEMA_PATH_V03)
 _RECIPE_VALIDATORS = {
     RECIPE_VERSION: Draft202012Validator(RECIPE_SCHEMA),
     RECIPE_VERSION_V02: Draft202012Validator(RECIPE_SCHEMA_V02),
+    RECIPE_VERSION_V03: Draft202012Validator(RECIPE_SCHEMA_V03),
 }
 
 
@@ -81,6 +88,8 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
         raise RecipeError("Part IDs must be unique.")
     if version == RECIPE_VERSION_V02:
         _validate_v02_relationships(recipe)
+    if version == RECIPE_VERSION_V03:
+        _validate_v03_relationships(recipe)
     return deepcopy(dict(recipe))
 
 
@@ -324,6 +333,334 @@ def _validate_v02_relationships(recipe: Mapping[str, Any]) -> None:
         visit(part_id)
 
 
+def _validate_v03_relationships(recipe: Mapping[str, Any]) -> None:
+    obj = recipe["object"]
+    components = obj.get("components", {})
+    if not obj.get("parts") and not obj.get("instances") and not obj.get("replications"):
+        raise RecipeError("Recipe must contain a part, instance, or replication.")
+    if len(obj.get("parts", [])) + len(obj.get("instances", [])) > MAX_V03_PARTS:
+        raise RecipeError("Recipe exceeds the Phase 3 part limit.")
+    for name, component in components.items():
+        if not component.get("parts") and not component.get("instances"):
+            raise RecipeError(f"Component must contain at least one part: {name}")
+        exposed = [item["name"] for item in component.get("exposes", [])]
+        if len(exposed) != len(set(exposed)):
+            raise RecipeError(f"Component exposes duplicate anchor names: {name}")
+        for connection in component.get("connections", []):
+            if connection["part"] not in {part["id"] for part in component["parts"]}:
+                raise RecipeError(f"Component connection references an unknown part: {name}.{connection['id']}")
+            if connection["target"]["part"] not in {part["id"] for part in component["parts"]}:
+                raise RecipeError(f"Component connection references an unknown target: {name}.{connection['id']}")
+    ids = [part["id"] for part in obj.get("parts", [])]
+    ids.extend(instance["id"] for instance in obj.get("instances", []))
+    ids.extend(replication["id"] for replication in obj.get("replications", []))
+    if len(ids) != len(set(ids)):
+        raise RecipeError("Top-level part, instance, and replication IDs must be unique.")
+    for instance in obj.get("instances", []):
+        if instance["component"] not in components:
+            raise RecipeError(f"Unknown component: {instance['component']}")
+    for replication in obj.get("replications", []):
+        if replication["component"] not in components:
+            raise RecipeError(f"Unknown component: {replication['component']}")
+        if replication["count"] > MAX_V03_REPLICATION:
+            raise RecipeError(f"Replication exceeds the limit: {replication['id']}")
+
+
+_V03_OPERATORS = {"add", "sub", "mul", "div", "min", "max", "clamp"}
+
+
+def _resolve_v03_value(
+    value: Any,
+    scopes: Mapping[str, Mapping[str, Any]],
+    dimensions: Mapping[str, Any],
+    location: str,
+    resolving: set[str] | None = None,
+    depth: int = 0,
+) -> Any:
+    if depth > 8:
+        raise RecipeError(f"Expression nesting exceeds the limit at {location}.")
+    if isinstance(value, list):
+        return [_resolve_v03_value(item, scopes, dimensions, location, resolving, depth + 1) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    if set(value) == {"$ref"}:
+        reference = value["$ref"]
+        if reference.startswith("parts."):
+            if reference not in dimensions:
+                raise RecipeError(f"Unknown dimension reference at {location}: {reference}")
+            return dimensions[reference]
+        separator = True
+        if reference.startswith("component.parameters."):
+            scope_name, name = "component", reference.removeprefix("component.parameters.")
+        elif reference.startswith("instance.parameters."):
+            scope_name, name = "instance", reference.removeprefix("instance.parameters.")
+        elif reference.startswith("parameters."):
+            scope_name, name = "parameters", reference.removeprefix("parameters.")
+        else:
+            scope_name, separator, name = reference.partition(".")
+            if not separator:
+                raise RecipeError(f"Unknown parameter reference at {location}: {reference}")
+        if not separator or scope_name not in scopes or name not in scopes[scope_name]:
+            raise RecipeError(f"Unknown parameter reference at {location}: {reference}")
+        key = f"{scope_name}.{name}"
+        active = resolving if resolving is not None else set()
+        if key in active:
+            raise RecipeError(f"Parameter reference cycle at {location}: {reference}")
+        active.add(key)
+        result = _resolve_v03_value(scopes[scope_name][name], scopes, dimensions, location, active, depth + 1)
+        active.remove(key)
+        return result
+    if set(value) == {"$expr"}:
+        expression = value["$expr"]
+        operation = expression["op"]
+        if operation not in _V03_OPERATORS:
+            raise RecipeError(f"Unsupported expression operator at {location}: {operation}")
+        args = [_resolve_v03_value(item, scopes, dimensions, location, resolving, depth + 1) for item in expression["args"]]
+        if operation == "clamp" and len(args) != 3:
+            raise RecipeError(f"clamp requires three arguments at {location}.")
+        if operation != "clamp" and len(args) < 1:
+            raise RecipeError(f"Expression requires an argument at {location}.")
+        if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) for item in args):
+            raise RecipeError(f"Expression arguments must be finite numbers at {location}.")
+        if operation == "add":
+            result = sum(args)
+        elif operation == "sub":
+            result = args[0] - sum(args[1:])
+        elif operation == "mul":
+            result = math.prod(args)
+        elif operation == "div":
+            result = args[0]
+            for divisor in args[1:]:
+                if divisor == 0:
+                    raise RecipeError(f"Division by zero at {location}.")
+                result /= divisor
+        elif operation == "min":
+            result = min(args)
+        elif operation == "max":
+            result = max(args)
+        else:
+            result = min(max(args[0], args[1]), args[2])
+        if not math.isfinite(result) or abs(result) > MAX_ABS_NUMBER:
+            raise RecipeError(f"Expression result is outside the allowed range at {location}.")
+        return result
+    raise RecipeError(f"Unsupported object in value position at {location}.")
+
+
+def _resolve_v03_mapping(values: Mapping[str, Any], scopes: Mapping[str, Mapping[str, Any]], location: str) -> dict[str, Any]:
+    resolved: dict[str, Any] = {}
+    local_scopes = dict(scopes)
+    local_scopes["parameters"] = values
+    for name, value in values.items():
+        resolved[name] = _resolve_v03_value(value, local_scopes, {}, f"{location}.{name}")
+    return resolved
+
+
+def _v03_vector(value: Any, scopes: Mapping[str, Mapping[str, Any]], dimensions: Mapping[str, Any], location: str) -> list[float]:
+    result = _resolve_v03_value(value, scopes, dimensions, location)
+    if not isinstance(result, list) or len(result) != 3:
+        raise RecipeError(f"Expected a three-dimensional vector at {location}.")
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) for item in result):
+        raise RecipeError(f"Vector must contain finite numbers at {location}.")
+    return [float(item) for item in result]
+
+
+def _v03_transform(transform: Mapping[str, Any], scopes: Mapping[str, Mapping[str, Any]], dimensions: Mapping[str, Any], location: str) -> dict[str, list[float]]:
+    return {
+        "position": _v03_vector(transform.get("position", [0, 0, 0]), scopes, dimensions, f"{location}.position"),
+        "rotation": _v03_vector(transform.get("rotation", [0, 0, 0]), scopes, dimensions, f"{location}.rotation"),
+        "scale": _v03_vector(transform.get("scale", [1, 1, 1]), scopes, dimensions, f"{location}.scale"),
+    }
+
+
+def _prefix_anchor(anchor: Mapping[str, Any], scopes: Mapping[str, Mapping[str, Any]], dimensions: Mapping[str, Any], location: str) -> dict[str, Any]:
+    copied = dict(anchor)
+    copied["local_position"] = _v03_vector(anchor["local_position"], scopes, dimensions, f"{location}.local_position")
+    if "local_rotation" in anchor:
+        copied["local_rotation"] = _v03_vector(anchor["local_rotation"], scopes, dimensions, f"{location}.local_rotation")
+    return copied
+
+
+def _compose_v03_transforms(outer: Mapping[str, Any], inner: Mapping[str, Any]) -> dict[str, list[float]]:
+    inner_position = _transform_point(inner["position"], outer)
+    return {
+        "position": list(inner_position),
+        "rotation": [outer["rotation"][index] + inner["rotation"][index] for index in range(3)],
+        "scale": [outer["scale"][index] * inner["scale"][index] for index in range(3)],
+    }
+
+
+def _expand_v03_component(
+    component_name: str,
+    component: Mapping[str, Any],
+    instance_id: str,
+    instance_parameters: Mapping[str, Any],
+    instance_transform: Mapping[str, Any],
+    top_parameters: Mapping[str, Any],
+    components: Mapping[str, Any],
+    depth: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, tuple[str, str]]]:
+    if depth > MAX_V03_COMPONENT_DEPTH:
+        raise RecipeError("Component nesting exceeds the Phase 3 limit.")
+    component_parameters = _resolve_v03_mapping(component.get("parameters", {}), {"parameters": instance_parameters, "component": instance_parameters, "root": top_parameters}, f"component.{component_name}.parameters")
+    scopes = {"parameters": top_parameters, "component": component_parameters, "instance": instance_parameters}
+    parts = []
+    for part in component.get("parts", []):
+        part_id = f"{instance_id}.{part['id']}"
+        parameters = {name: _resolve_v03_value(value, scopes, {}, f"{part_id}.parameters.{name}") for name, value in part["parameters"].items()}
+        copied = dict(part)
+        copied["id"] = part_id
+        copied["parameters"] = parameters
+        copied["transform"] = _compose_v03_transforms(instance_transform, _v03_transform(part.get("transform", {}), scopes, {}, part_id))
+        copied["anchors"] = [_prefix_anchor(anchor, scopes, {}, f"{part_id}.anchors[{index}]") for index, anchor in enumerate(part.get("anchors", []))]
+        parts.append(copied)
+    connections = []
+    for connection in component.get("connections", []):
+        copied = dict(connection)
+        copied["id"] = f"{instance_id}.{connection['id']}"
+        copied["part"] = f"{instance_id}.{connection['part']}"
+        copied["target"] = dict(connection["target"])
+        copied["target"]["part"] = f"{instance_id}.{connection['target']['part']}"
+        if "offset" in copied:
+            copied["offset"] = _v03_vector(copied["offset"], scopes, {}, f"{copied['id']}.offset")
+        connections.append(copied)
+    nested_exposed: dict[str, tuple[str, str]] = {}
+    for nested in component.get("instances", []):
+        nested_component = components.get(nested["component"])
+        if nested_component is None:
+            raise RecipeError(f"Unknown nested component: {nested['component']}")
+        nested_parameters = dict(nested.get("parameters", {}))
+        nested_defaults = nested_component.get("parameters", {})
+        nested_parameters = {name: nested_parameters.get(name, value) for name, value in nested_defaults.items()} | nested_parameters
+        nested_scopes = {"parameters": top_parameters, "component": component_parameters, "instance": instance_parameters}
+        resolved_nested = _resolve_v03_mapping(nested_parameters, nested_scopes, f"{instance_id}.{nested['id']}.parameters")
+        nested_transform = _compose_v03_transforms(
+            instance_transform,
+            _v03_transform(nested.get("transform", {}), nested_scopes, {}, f"{instance_id}.{nested['id']}"),
+        )
+        nested_parts, nested_connections, nested_anchors = _expand_v03_component(
+            nested["component"], nested_component, f"{instance_id}.{nested['id']}", resolved_nested,
+            nested_transform, top_parameters, components, depth + 1,
+        )
+        parts.extend(nested_parts)
+        connections.extend(nested_connections)
+        nested_exposed.update({f"{nested['id']}.{name}": endpoint for name, endpoint in nested_anchors.items()})
+    exposed = {}
+    for item in component.get("exposes", []):
+        if item["source"] in nested_exposed:
+            exposed[item["name"]] = nested_exposed[item["source"]]
+            continue
+        source_part, separator, source_anchor = item["source"].partition(".")
+        if not separator:
+            raise RecipeError(f"Component exposure must use part.anchor syntax: {component_name}.{item['source']}")
+        exposed[item["name"]] = (f"{instance_id}.{source_part}", source_anchor)
+    return parts, connections, exposed
+
+
+def _radial_position(center: list[float], radius: float, angle: float) -> list[float]:
+    radians = math.radians(angle)
+    return [center[0] + radius * math.cos(radians), center[1], center[2] + radius * math.sin(radians)]
+
+
+def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
+    obj = recipe["object"]
+    top_parameters = _resolve_v03_mapping(obj.get("parameters", {}), {"root": obj.get("parameters", {})}, "object.parameters")
+    flat_parts = []
+    flat_connections = []
+    exposed_anchors: dict[str, tuple[str, str]] = {}
+    scopes = {"parameters": top_parameters, "root": top_parameters}
+    for part in obj.get("parts", []):
+        copied = dict(part)
+        copied["parameters"] = {name: _resolve_v03_value(value, scopes, {}, f"{part['id']}.parameters.{name}") for name, value in part["parameters"].items()}
+        copied["transform"] = dict(part.get("transform", {}))
+        copied["anchors"] = [dict(anchor) for anchor in part.get("anchors", [])]
+        flat_parts.append(copied)
+    for instance in obj.get("instances", []):
+        component = obj["components"][instance["component"]]
+        parameters = dict(instance.get("parameters", {}))
+        component_defaults = component.get("parameters", {})
+        merged = {name: parameters.get(name, value) for name, value in component_defaults.items()}
+        merged.update(parameters)
+        resolved_instance_parameters = _resolve_v03_mapping(merged, scopes, f"instance.{instance['id']}.parameters")
+        parts, connections, exposed = _expand_v03_component(instance["component"], component, instance["id"], resolved_instance_parameters, _v03_transform(instance.get("transform", {}), scopes, {}, instance["id"]), top_parameters, obj["components"], 1)
+        flat_parts.extend(parts)
+        flat_connections.extend(connections)
+        for name, endpoint in exposed.items():
+            exposed_anchors[f"{instance['id']}.{name}"] = endpoint
+        if "connection" in instance:
+            connection = instance["connection"]
+            source_part, source_anchor = exposed_anchors[f"{instance['id']}.{connection['anchor']}"]
+            target = connection["target"]
+            copied = {"id": f"{instance['id']}.connection", "part": source_part, "anchor": source_anchor, "target": target, "mode": connection.get("mode", "position")}
+            if "offset" in connection:
+                copied["offset"] = _v03_vector(connection["offset"], scopes, {}, f"{instance['id']}.connection.offset")
+            flat_connections.append(copied)
+    for replication in obj.get("replications", []):
+        if replication["count"] > MAX_V03_REPLICATION:
+            raise RecipeError(f"Replication exceeds the limit: {replication['id']}")
+        base_transform = _v03_transform(replication.get("transform", {}), scopes, {}, replication["id"])
+        for index in range(replication["count"]):
+            instance_id = f"{replication['id']}[{index}]"
+            transform = dict(base_transform)
+            if replication["pattern"] == "linear":
+                step = _v03_vector(replication.get("step", [0, 0, 0]), scopes, {}, f"{replication['id']}.step")
+                transform["position"] = [base_transform["position"][axis] + index * step[axis] for axis in range(3)]
+            else:
+                center = _v03_vector(replication.get("center", [0, 0, 0]), scopes, {}, f"{replication['id']}.center")
+                radius = float(_resolve_v03_value(replication.get("radius", 0), scopes, {}, f"{replication['id']}.radius"))
+                start = float(_resolve_v03_value(replication.get("start_angle", 0), scopes, {}, f"{replication['id']}.start_angle"))
+                step = float(_resolve_v03_value(replication.get("angle_step", 360.0 / replication["count"]), scopes, {}, f"{replication['id']}.angle_step"))
+                transform["position"] = _radial_position(center, radius, start + index * step)
+                transform["rotation"] = [transform["rotation"][0], transform["rotation"][1] + start + index * step, transform["rotation"][2]]
+            component = obj["components"][replication["component"]]
+            parameters = _resolve_v03_mapping(replication.get("parameters", {}), scopes, f"{instance_id}.parameters")
+            parts, connections, exposed = _expand_v03_component(replication["component"], component, instance_id, parameters, transform, top_parameters, obj["components"], 1)
+            flat_parts.extend(parts)
+            flat_connections.extend(connections)
+            for name, endpoint in exposed.items():
+                exposed_anchors[f"{instance_id}.{name}"] = endpoint
+    for connection in obj.get("connections", []):
+        copied = dict(connection)
+        if copied["part"] in exposed_anchors:
+            copied["part"], copied["anchor"] = exposed_anchors[copied["part"]]
+        if copied["target"]["part"] in exposed_anchors:
+            copied["target"] = dict(copied["target"])
+            copied["target"]["part"], copied["target"]["anchor"] = exposed_anchors[copied["target"]["part"]]
+        flat_connections.append(copied)
+    if len(flat_parts) > MAX_V03_PARTS:
+        raise RecipeError("Expanded recipe exceeds the Phase 3 part limit.")
+    connected_ids = {connection["part"] for connection in flat_connections}
+    for part in flat_parts:
+        if part["id"] in connected_ids:
+            part["transform"].pop("position", None)
+    dimensions = {}
+    for part in flat_parts:
+        config = registry.get(part["type"])
+        if not isinstance(config, Mapping) or config.get("generator") is None:
+            raise RecipeError(f"Unknown or unavailable object type: {part['type']}")
+        parameters = resolve_part_parameters({"object": {"parameters": {}, "parts": [part]}}, part, registry)
+        vertices, _, _ = config["generator"](parameters)
+        if vertices:
+            for axis, name in enumerate(("width", "height", "depth")):
+                values = [float(vertex[axis]) for vertex in vertices]
+                dimensions[f"parts.{part['id']}.dimensions.{name}"] = max(values) - min(values)
+    for part in flat_parts:
+        part["transform"] = _v03_transform(part.get("transform", {}), scopes, dimensions, part["id"])
+        if part["id"] in connected_ids:
+            part["transform"].pop("position", None)
+        part["anchors"] = [
+            _prefix_anchor(anchor, scopes, dimensions, f"{part['id']}.anchors[{index}]")
+            for index, anchor in enumerate(part.get("anchors", []))
+        ]
+    for connection in flat_connections:
+        if "offset" in connection:
+            connection["offset"] = _v03_vector(connection["offset"], scopes, dimensions, f"{connection['id']}.offset")
+    return {
+        "format": RECIPE_FORMAT,
+        "version": RECIPE_VERSION_V02,
+        "object": {"name": obj["name"], "parameters": {}, "parts": flat_parts, "connections": flat_connections},
+    }
+
+
 def _part_order(recipe: Mapping[str, Any]) -> list[str]:
     parts = recipe["object"]["parts"]
     dependencies = {part["id"]: [] for part in parts}
@@ -406,6 +743,8 @@ def _build_v02_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
 def build_recipe_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
     """Generate each named part using only an existing registry generator."""
     checked_recipe = validate_recipe(recipe)
+    if checked_recipe["version"] == RECIPE_VERSION_V03:
+        return _build_v02_parts(_flatten_v03_recipe(checked_recipe, registry), registry)
     if checked_recipe["version"] == RECIPE_VERSION_V02:
         return _build_v02_parts(checked_recipe, registry)
     parts = []

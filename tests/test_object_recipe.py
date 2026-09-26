@@ -244,3 +244,161 @@ def test_smoke_pyramid_cube_anchor_with_four_torus_legs():
     assert len(vertices) > 8
     assert len(faces) > 12
     assert len(edges) > 12
+
+
+def v03_recipe(parts, parameters=None, components=None, instances=None, replications=None, connections=None):
+    return {
+        "format": "hexsphere.object-recipe",
+        "version": "0.3",
+        "object": {
+            "name": "Phase 3 assembly",
+            "parameters": parameters or {},
+            "parts": parts,
+            "components": components or {},
+            "instances": instances or [],
+            "replications": replications or [],
+            "connections": connections or [],
+        },
+    }
+
+
+def test_v03_controlled_arithmetic_and_dimension_offset():
+    value = v03_recipe(
+        [
+            {"id": "base", "type": "SimpleBlock", "parameters": {"cube_size": {"$ref": "parameters.size"}, "thickness": 1}},
+            {
+                "id": "upper",
+                "type": "SimpleBlock",
+                "parameters": {"cube_size": {"$expr": {"op": "mul", "args": [{"$ref": "parameters.size"}, 0.5]}}, "thickness": 1},
+                "anchors": [{"name": "dimension_anchor", "parent": "main", "local_position": [0, {"$ref": "parts.base.dimensions.height"}, 0]}],
+            },
+        ],
+        parameters={"size": 4.0},
+        connections=[
+            {
+                "id": "upper-on-base",
+                "part": "upper",
+                "anchor": "center",
+                "target": {"part": "base", "anchor": "top"},
+                "mode": "position",
+                "offset": [0, {"$ref": "parts.base.dimensions.height"}, 0],
+            }
+        ],
+    )
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    upper = next(part for part in parts if part.part_id == "upper")
+    center_y = sum(vertex[1] for vertex in upper.vertices) / len(upper.vertices)
+    assert center_y == pytest.approx(6.0)
+
+
+def test_v03_reusable_component_instance_exposes_anchor():
+    component = {
+        "parameters": {"size": 1.0},
+        "parts": [{
+            "id": "block",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": {"$ref": "component.parameters.size"}, "thickness": 1},
+        }],
+        "exposes": [{"name": "mount", "source": "block.center"}],
+    }
+    value = v03_recipe(
+        [{
+            "id": "base",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 4.0, "thickness": 1},
+            "anchors": [{"name": "mount", "parent": "main", "local_position": [0, 3, 0]}],
+        }],
+        components={"small_block": component},
+        instances=[{
+            "id": "child",
+            "component": "small_block",
+            "connection": {"anchor": "mount", "target": {"part": "base", "anchor": "mount"}, "mode": "position"},
+        }],
+    )
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    child = next(part for part in parts if part.part_id == "child.block")
+    center_y = sum(vertex[1] for vertex in child.vertices) / len(child.vertices)
+    assert center_y == pytest.approx(3.0)
+
+
+def test_v03_linear_replication_is_bounded_and_deterministic():
+    value = v03_recipe(
+        [],
+        components={
+            "block": {
+                "parameters": {},
+                "parts": [{"id": "part", "type": "SimpleBlock", "parameters": {"cube_size": 1.0, "thickness": 1}}],
+                "exposes": [],
+            }
+        },
+        replications=[{"id": "row", "component": "block", "count": 3, "pattern": "linear", "step": [0, 2, 0]}],
+    )
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert [part.part_id for part in parts] == ["row[0].part", "row[1].part", "row[2].part"]
+    centers = [sum(vertex[1] for vertex in part.vertices) / len(part.vertices) for part in parts]
+    assert centers == pytest.approx([0.0, 2.0, 4.0])
+
+
+def test_v03_nested_component_anchor_exposure():
+    value = v03_recipe(
+        [],
+        components={
+            "inner": {
+                "parameters": {},
+                "parts": [{"id": "part", "type": "SimpleBlock", "parameters": {"cube_size": 1.0, "thickness": 1}}],
+                "exposes": [{"name": "mount", "source": "part.center"}],
+            },
+            "outer": {
+                "parameters": {},
+                "parts": [],
+                "instances": [{"id": "inner_instance", "component": "inner"}],
+                "exposes": [{"name": "mount", "source": "inner_instance.mount"}],
+            },
+        },
+        instances=[{"id": "assembly", "component": "outer"}],
+    )
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert [part.part_id for part in parts] == ["assembly.inner_instance.part"]
+
+
+def test_v03_pyramid_reuses_torus_component_four_times():
+    corners = {
+        "ne": (2.0, -2.0, 2.0),
+        "nw": (-2.0, -2.0, 2.0),
+        "se": (2.0, -2.0, -2.0),
+        "sw": (-2.0, -2.0, -2.0),
+    }
+    value = v03_recipe(
+        [{
+            "id": "apex",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 4.0, "thickness": 3},
+            "anchors": [{"name": name, "parent": "main", "local_position": list(position)} for name, position in corners.items()],
+        }],
+        components={
+            "torus_leg": {
+                "parameters": {"radius": 1.4},
+                "parts": [{
+                    "id": "ring",
+                    "type": "SimpleTorus",
+                    "parameters": {
+                        "torus_inner_radius": {"$expr": {"op": "sub", "args": [{"$ref": "component.parameters.radius"}, 0.4]}},
+                        "torus_outer_radius": {"$ref": "component.parameters.radius"},
+                        "torus_hollow_percent": 50.0, "torus_xy_ratio": 1.0, "torus_start_angle": 0.0,
+                        "torus_sweep": 360.0, "torus_sides": 12, "torus_cylinder": False,
+                    },
+                }],
+                "exposes": [{"name": "center", "source": "ring.center"}],
+            }
+        },
+        instances=[
+            {"id": name, "component": "torus_leg", "connection": {"anchor": "center", "target": {"part": "apex", "anchor": name}, "mode": "position"}}
+            for name in corners
+        ],
+    )
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert len(parts) == 5
+    for name, position in corners.items():
+        ring = next(part for part in parts if part.part_id == f"{name}.ring")
+        center = [sum(vertex[axis] for vertex in ring.vertices) / len(ring.vertices) for axis in range(3)]
+        assert center == pytest.approx(list(position), abs=1e-9)

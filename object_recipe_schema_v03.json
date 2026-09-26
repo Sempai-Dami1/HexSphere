@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hexsphere.object-recipe/0.3",
+  "title": "HexSphere Object Recipe 0.3",
+  "type": "object",
+  "required": ["format", "version", "object"],
+  "properties": {
+    "format": {"const": "hexsphere.object-recipe"},
+    "version": {"const": "0.3"},
+    "object": {"$ref": "#/$defs/object"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "number": {"type": "number", "minimum": -1000000, "maximum": 1000000},
+    "vector3": {"type": "array", "items": {"$ref": "#/$defs/number"}, "minItems": 3, "maxItems": 3},
+    "ref": {
+      "type": "object",
+      "required": ["$ref"],
+      "properties": {"$ref": {"type": "string", "minLength": 1, "maxLength": 256}},
+      "additionalProperties": false
+    },
+    "expr": {
+      "type": "object",
+      "required": ["$expr"],
+      "properties": {
+        "$expr": {
+          "type": "object",
+          "required": ["op", "args"],
+          "properties": {
+            "op": {"enum": ["add", "sub", "mul", "div", "min", "max", "clamp"]},
+            "args": {"type": "array", "minItems": 1, "maxItems": 8}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "value": {
+      "anyOf": [
+        {"type": "string"},
+        {"$ref": "#/$defs/number"},
+        {"type": "boolean"},
+        {"$ref": "#/$defs/ref"},
+        {"$ref": "#/$defs/expr"}
+      ]
+    },
+    "transform": {
+      "type": "object",
+      "properties": {
+        "position": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "rotation": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "scale": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3}
+      },
+      "additionalProperties": false
+    },
+    "anchor": {
+      "type": "object",
+      "required": ["name", "parent", "local_position"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 80},
+        "parent": {"type": "string", "pattern": "^(main|[A-Za-z_][A-Za-z0-9_-]*(/[A-Za-z_][A-Za-z0-9_-]*)*)$", "maxLength": 512},
+        "local_position": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "local_rotation": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "inherit_orientation": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "part": {
+      "type": "object",
+      "required": ["id", "type", "parameters"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 80},
+        "type": {"type": "string", "minLength": 1, "maxLength": 80},
+        "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "transform": {"$ref": "#/$defs/transform"},
+        "anchors": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/anchor"}}
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["part", "anchor"],
+      "properties": {
+        "part": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 160},
+        "anchor": {"type": "string", "maxLength": 512}
+      },
+      "additionalProperties": false
+    },
+    "connection": {
+      "type": "object",
+      "required": ["id", "part", "anchor", "target", "mode"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 160},
+        "part": {"type": "string", "maxLength": 160},
+        "anchor": {"type": "string", "maxLength": 512},
+        "target": {"$ref": "#/$defs/target"},
+        "mode": {"enum": ["position", "snap"]},
+        "offset": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "rotation_offset": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3}
+      },
+      "additionalProperties": false
+    },
+    "component": {
+      "type": "object",
+      "required": ["parameters", "parts", "exposes"],
+      "properties": {
+        "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "parts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/part"}},
+        "connections": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/connection"}},
+        "instances": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/instance"}},
+        "exposes": {"type": "array", "maxItems": 64, "items": {"type": "object", "required": ["name", "source"], "properties": {"name": {"type": "string", "maxLength": 80}, "source": {"type": "string", "maxLength": 512}}, "additionalProperties": false}}
+      },
+      "additionalProperties": false
+    },
+    "instance": {
+      "type": "object",
+      "required": ["id", "component"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 80},
+        "component": {"type": "string", "maxLength": 80},
+        "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "transform": {"$ref": "#/$defs/transform"},
+        "connection": {"type": "object", "required": ["anchor", "target"], "properties": {"anchor": {"type": "string", "maxLength": 80}, "target": {"$ref": "#/$defs/target"}, "mode": {"enum": ["position", "snap"]}, "offset": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3}}, "additionalProperties": false}
+      },
+      "additionalProperties": false
+    },
+    "replication": {
+      "type": "object",
+      "required": ["id", "component", "count", "pattern"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 80},
+        "component": {"type": "string", "maxLength": 80},
+        "count": {"type": "integer", "minimum": 1, "maximum": 64},
+        "pattern": {"enum": ["linear", "radial"]},
+        "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "step": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "center": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "axis": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
+        "radius": {"$ref": "#/$defs/value"},
+        "start_angle": {"$ref": "#/$defs/value"},
+        "angle_step": {"$ref": "#/$defs/value"},
+        "transform": {"$ref": "#/$defs/transform"}
+      },
+      "additionalProperties": false
+    },
+    "object": {
+      "type": "object",
+      "required": ["name", "parameters", "parts"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 160},
+        "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "parts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/part"}},
+        "connections": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/connection"}},
+        "components": {"type": "object", "maxProperties": 64, "additionalProperties": {"$ref": "#/$defs/component"}},
+        "instances": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/instance"}},
+        "replications": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/replication"}}
+      },
+      "additionalProperties": false
+    }
+  }
+}
