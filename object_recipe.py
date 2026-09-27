@@ -17,11 +17,13 @@ RECIPE_VERSION_V02 = "0.2"
 RECIPE_VERSION_V03 = "0.3"
 RECIPE_VERSION_V04 = "0.4"
 RECIPE_VERSION_V05 = "0.5"
+RECIPE_VERSION_V06 = "0.6"
 SCHEMA_PATH = Path(__file__).with_name("object_recipe_schema.json")
 SCHEMA_PATH_V02 = Path(__file__).with_name("object_recipe_schema_v02.json")
 SCHEMA_PATH_V03 = Path(__file__).with_name("object_recipe_schema_v03.json")
 SCHEMA_PATH_V04 = Path(__file__).with_name("object_recipe_schema_v04.json")
 SCHEMA_PATH_V05 = Path(__file__).with_name("object_recipe_schema_v05.json")
+SCHEMA_PATH_V06 = Path(__file__).with_name("object_recipe_schema_v06.json")
 MAX_RECIPE_BYTES = 1_000_000
 MAX_PARTS = 64
 MAX_NESTING_DEPTH = 4
@@ -29,6 +31,8 @@ MAX_ABS_NUMBER = 1_000_000.0
 MAX_V03_PARTS = 256
 MAX_V03_COMPONENT_DEPTH = 8
 MAX_V03_REPLICATION = 64
+MAX_STACK_TRIANGLES = 250_000
+MAX_STACK_VERTICES = 500_000
 
 
 class RecipeError(ValueError):
@@ -88,14 +92,37 @@ RECIPE_SCHEMA_V02 = _load_schema(SCHEMA_PATH_V02)
 RECIPE_SCHEMA_V03 = _load_schema(SCHEMA_PATH_V03)
 RECIPE_SCHEMA_V04 = _load_schema(SCHEMA_PATH_V04)
 RECIPE_SCHEMA_V05 = _load_schema(SCHEMA_PATH_V05)
+RECIPE_SCHEMA_V06 = _load_schema(SCHEMA_PATH_V06)
 PROFILE_SCHEMA = RECIPE_SCHEMA_V05["$defs"]["profile"]
 MAX_PROFILE_DIMENSION = RECIPE_SCHEMA_V05["$defs"]["profileDimension"]["maximum"]
+MAX_STACK_LAYERS = RECIPE_SCHEMA_V06["$defs"]["stackLayerCount"]["maximum"]
+STACK_DEPTH_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["stackDepth"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["stackDepth"]["maximum"],
+)
+STACK_CELL_SIZE_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["cellSizeDimension"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["cellSizeDimension"]["maximum"],
+)
+STACK_EVOLUTION_SHIFT_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["evolutionShiftValue"]["items"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionShiftValue"]["items"]["maximum"],
+)
+STACK_EVOLUTION_ROTATION_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["evolutionRotationValue"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionRotationValue"]["maximum"],
+)
+STACK_EVOLUTION_SCALE_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["maximum"],
+)
 _RECIPE_VALIDATORS = {
     RECIPE_VERSION: Draft202012Validator(RECIPE_SCHEMA),
     RECIPE_VERSION_V02: Draft202012Validator(RECIPE_SCHEMA_V02),
     RECIPE_VERSION_V03: Draft202012Validator(RECIPE_SCHEMA_V03),
     RECIPE_VERSION_V04: Draft202012Validator(RECIPE_SCHEMA_V04),
     RECIPE_VERSION_V05: Draft202012Validator(RECIPE_SCHEMA_V05),
+    RECIPE_VERSION_V06: Draft202012Validator(RECIPE_SCHEMA_V06),
 }
 _PROFILE_VALIDATOR = Draft202012Validator({
     "$schema": RECIPE_SCHEMA_V05["$schema"],
@@ -161,6 +188,209 @@ def profile_bounds(profile: RasterProfile) -> tuple[float, float, float, float]:
     return profile.bounds
 
 
+def _interpolated_evolution_value(
+    evolution: Mapping[str, Any],
+    name: str,
+    layer_index: int,
+    layer_count: int,
+    default: float | tuple[float, float],
+    limits: tuple[float, float],
+) -> float | tuple[float, float]:
+    operation = evolution.get(name)
+    if operation is None:
+        return default
+    if not isinstance(operation, Mapping) or set(operation) != {"start", "end"}:
+        raise RecipeError(f"Invalid raster stack evolution operation: {name}.")
+
+    start = operation["start"]
+    end = operation["end"]
+    expected_length = 2 if isinstance(default, tuple) else None
+
+    def validate(value: Any) -> float | tuple[float, float]:
+        values = value if expected_length is not None else [value]
+        if expected_length is not None and (not isinstance(value, (list, tuple)) or len(value) != expected_length):
+            raise RecipeError(f"Raster stack evolution {name} must contain two values.")
+        if any(
+            isinstance(component, bool)
+            or not isinstance(component, (int, float))
+            or not math.isfinite(component)
+            or not limits[0] <= component <= limits[1]
+            for component in values
+        ):
+            raise RecipeError(f"Raster stack evolution {name} is outside the allowed finite range.")
+        converted = tuple(float(component) for component in values)
+        return converted if expected_length is not None else converted[0]
+
+    start_value = validate(start)
+    end_value = validate(end)
+    amount = layer_index / (layer_count - 1)
+    if expected_length is None:
+        return float(start_value) + amount * (float(end_value) - float(start_value))
+    return tuple(
+        start_value[index] + amount * (end_value[index] - start_value[index])
+        for index in range(expected_length)
+    )
+
+
+def _build_raster_stack_mesh(
+    profile_value: Mapping[str, Any], geometry: Mapping[str, Any]
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], list[tuple[int, int]]]:
+    profile = load_profile(profile_value)
+    if not isinstance(geometry, Mapping) or geometry.get("type") != "raster_stack":
+        raise RecipeError("Unsupported generated geometry type.")
+
+    layer_count = geometry.get("layer_count")
+    depth = geometry.get("depth")
+    cell_size = geometry.get("cell_size", [1.0, 1.0])
+    if isinstance(layer_count, bool) or not isinstance(layer_count, int) or not 2 <= layer_count <= MAX_STACK_LAYERS:
+        raise RecipeError(f"Raster stack layer count must be between 2 and {MAX_STACK_LAYERS}.")
+    if isinstance(depth, bool) or not isinstance(depth, (int, float)) or not math.isfinite(depth) or not STACK_DEPTH_LIMITS[0] <= depth <= STACK_DEPTH_LIMITS[1]:
+        raise RecipeError("Raster stack depth is outside the allowed finite range.")
+    if not isinstance(cell_size, (list, tuple)) or len(cell_size) != 2:
+        raise RecipeError("Raster stack cell_size must contain two positive dimensions.")
+    if any(
+        isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not STACK_CELL_SIZE_LIMITS[0] <= value <= STACK_CELL_SIZE_LIMITS[1]
+        for value in cell_size
+    ):
+        raise RecipeError("Raster stack cell dimensions are outside the allowed finite range.")
+    cell_width, cell_height = (float(value) for value in cell_size)
+    depth = float(depth)
+    evolution = geometry.get("evolution", {})
+    if not isinstance(evolution, Mapping):
+        raise RecipeError("Raster stack evolution must be an object.")
+
+    occupied = {
+        (column, profile.height - row - 1)
+        for column, row in profile.iter_occupied_cells()
+    }
+    if not occupied:
+        raise RecipeError("Cannot build a raster stack from an empty profile.")
+
+    cell_corners = {
+        cell: (
+            (cell[0], cell[1]),
+            (cell[0] + 1, cell[1]),
+            (cell[0] + 1, cell[1] + 1),
+            (cell[0], cell[1] + 1),
+        )
+        for cell in occupied
+    }
+    grid_corners = {corner for corners in cell_corners.values() for corner in corners}
+    vertex_keys_by_cell_corner = {}
+    for grid_x, grid_y in grid_corners:
+        incident = {
+            (cell_x, cell_y)
+            for cell_x in (grid_x - 1, grid_x)
+            for cell_y in (grid_y - 1, grid_y)
+            if (cell_x, cell_y) in occupied
+        }
+        remaining = set(incident)
+        while remaining:
+            seed = min(remaining)
+            component = {seed}
+            pending = [seed]
+            remaining.remove(seed)
+            while pending:
+                cell_x, cell_y = pending.pop()
+                neighbors = [
+                    neighbor for neighbor in remaining
+                    if abs(neighbor[0] - cell_x) + abs(neighbor[1] - cell_y) == 1
+                ]
+                for neighbor in neighbors:
+                    remaining.remove(neighbor)
+                    component.add(neighbor)
+                    pending.append(neighbor)
+            fan_id = min(component)
+            for cell in component:
+                vertex_keys_by_cell_corner[(cell, (grid_x, grid_y))] = (grid_x, grid_y, *fan_id)
+
+    vertex_keys = sorted(set(vertex_keys_by_cell_corner.values()))
+    exposed_edges = []
+    for cell_x, cell_y in sorted(occupied):
+        corners = cell_corners[(cell_x, cell_y)]
+        neighbors = (
+            (cell_x, cell_y - 1),
+            (cell_x + 1, cell_y),
+            (cell_x, cell_y + 1),
+            (cell_x - 1, cell_y),
+        )
+        for edge_index, neighbor in enumerate(neighbors):
+            if neighbor not in occupied:
+                exposed_edges.append((
+                    cell_x,
+                    cell_y,
+                    corners[edge_index],
+                    corners[(edge_index + 1) % 4],
+                ))
+
+    triangle_count = 4 * len(occupied) + 2 * len(exposed_edges) * (layer_count - 1)
+    vertex_count = len(vertex_keys) * layer_count
+    if triangle_count > MAX_STACK_TRIANGLES or vertex_count > MAX_STACK_VERTICES:
+        raise RecipeError("Raster stack exceeds the generated mesh size limit.")
+
+    vertices = []
+    vertex_indices = {}
+    canvas_center_x = profile.width * cell_width / 2.0
+    canvas_center_y = profile.height * cell_height / 2.0
+    for layer_index in range(layer_count):
+        z = depth * layer_index / (layer_count - 1)
+        shift_x, shift_y = _interpolated_evolution_value(
+            evolution, "shift", layer_index, layer_count, (0.0, 0.0), STACK_EVOLUTION_SHIFT_LIMITS
+        )
+        rotation_degrees = _interpolated_evolution_value(
+            evolution, "rotation_degrees", layer_index, layer_count, 0.0, STACK_EVOLUTION_ROTATION_LIMITS
+        )
+        scale_x, scale_y = _interpolated_evolution_value(
+            evolution, "scale", layer_index, layer_count, (1.0, 1.0), STACK_EVOLUTION_SCALE_LIMITS
+        )
+        radians = math.radians(float(rotation_degrees))
+        cosine, sine = math.cos(radians), math.sin(radians)
+        for key in vertex_keys:
+            grid_x, grid_y = key[:2]
+            relative_x = (grid_x * cell_width - canvas_center_x) * scale_x
+            relative_y = (grid_y * cell_height - canvas_center_y) * scale_y
+            point = (
+                canvas_center_x + cosine * relative_x - sine * relative_y + shift_x,
+                canvas_center_y + sine * relative_x + cosine * relative_y + shift_y,
+                z,
+            )
+            if any(not math.isfinite(value) or abs(value) > MAX_ABS_NUMBER for value in point):
+                raise RecipeError("Raster stack generated a coordinate outside the allowed range.")
+            vertex_indices[(layer_index, key)] = len(vertices)
+            vertices.append(point)
+
+    faces = []
+    last_layer = layer_count - 1
+    for cell in sorted(occupied):
+        corners = cell_corners[cell]
+        keys = [vertex_keys_by_cell_corner[(cell, corner)] for corner in corners]
+        sw, se, ne, nw = keys
+        faces.extend((
+            (vertex_indices[(0, sw)], vertex_indices[(0, nw)], vertex_indices[(0, ne)]),
+            (vertex_indices[(0, sw)], vertex_indices[(0, ne)], vertex_indices[(0, se)]),
+            (vertex_indices[(last_layer, sw)], vertex_indices[(last_layer, se)], vertex_indices[(last_layer, ne)]),
+            (vertex_indices[(last_layer, sw)], vertex_indices[(last_layer, ne)], vertex_indices[(last_layer, nw)]),
+        ))
+
+    for cell_x, cell_y, edge_start, edge_end in exposed_edges:
+        start_key = vertex_keys_by_cell_corner[((cell_x, cell_y), edge_start)]
+        end_key = vertex_keys_by_cell_corner[((cell_x, cell_y), edge_end)]
+        for layer_index in range(last_layer):
+            lower_start = vertex_indices[(layer_index, start_key)]
+            lower_end = vertex_indices[(layer_index, end_key)]
+            upper_end = vertex_indices[(layer_index + 1, end_key)]
+            upper_start = vertex_indices[(layer_index + 1, start_key)]
+            faces.extend(((lower_start, lower_end, upper_end), (lower_start, upper_end, upper_start)))
+
+    edge_set = {
+        tuple(sorted((face[index], face[(index + 1) % 3])))
+        for face in faces
+        for index in range(3)
+    }
+    edges = sorted(edge_set)
+    return vertices, faces, edges
+
+
 def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
     """Validate a supported versioned document and return a detached mapping."""
     if not isinstance(recipe, Mapping):
@@ -181,8 +411,11 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
         error = errors[0]
         raise RecipeError(f"Invalid recipe structure at {_error_path(error)}: {error.message}")
 
-    if version == RECIPE_VERSION_V05 and "profile" in recipe["object"]:
+    if version in {RECIPE_VERSION_V05, RECIPE_VERSION_V06} and "profile" in recipe["object"]:
         validate_profile(recipe["object"]["profile"])
+    if version == RECIPE_VERSION_V06 and any("geometry" in part for part in recipe["object"]["parts"]):
+        if "profile" not in recipe["object"]:
+            raise RecipeError("A raster stack part requires object.profile.")
 
     parts = recipe["object"]["parts"]
     part_ids = [part["id"] for part in parts]
@@ -192,7 +425,7 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
         _validate_v02_relationships(recipe)
     if version == RECIPE_VERSION_V03:
         _validate_v03_relationships(recipe)
-    if version in {RECIPE_VERSION_V04, RECIPE_VERSION_V05}:
+    if version in {RECIPE_VERSION_V04, RECIPE_VERSION_V05, RECIPE_VERSION_V06}:
         _validate_v03_relationships(recipe)
     return deepcopy(dict(recipe))
 
@@ -682,7 +915,7 @@ def _radial_position(center: list[float], radius: float, angle: float) -> list[f
 
 def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
     obj = recipe["object"]
-    matrix_mode = recipe.get("version") in {RECIPE_VERSION_V04, RECIPE_VERSION_V05}
+    matrix_mode = recipe.get("version") in {RECIPE_VERSION_V04, RECIPE_VERSION_V05, RECIPE_VERSION_V06}
     top_parameters = _resolve_v03_mapping(obj.get("parameters", {}), {"root": obj.get("parameters", {})}, "object.parameters")
     flat_parts = []
     flat_connections = []
@@ -690,7 +923,13 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     scopes = {"parameters": top_parameters, "root": top_parameters}
     for part in obj.get("parts", []):
         copied = dict(part)
-        copied["parameters"] = {name: _resolve_v03_value(value, scopes, {}, f"{part['id']}.parameters.{name}") for name, value in part["parameters"].items()}
+        if "geometry" in part:
+            vertices, faces, edges = _build_raster_stack_mesh(obj["profile"], part["geometry"])
+            copied["type"] = "RasterStack"
+            copied["parameters"] = {}
+            copied["_generated_mesh"] = (vertices, faces, edges)
+        else:
+            copied["parameters"] = {name: _resolve_v03_value(value, scopes, {}, f"{part['id']}.parameters.{name}") for name, value in part["parameters"].items()}
         copied["transform"] = dict(part.get("transform", {}))
         if matrix_mode:
             copied["transform"]["_rotation_matrix"] = _rotation_matrix(copied["transform"].get("rotation", [0, 0, 0]))
@@ -761,11 +1000,14 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
             part["transform"].pop("position", None)
     dimensions = {}
     for part in flat_parts:
-        config = registry.get(part["type"])
-        if not isinstance(config, Mapping) or config.get("generator") is None:
-            raise RecipeError(f"Unknown or unavailable object type: {part['type']}")
-        parameters = resolve_part_parameters({"object": {"parameters": {}, "parts": [part]}}, part, registry)
-        vertices, _, _ = config["generator"](parameters)
+        if "_generated_mesh" in part:
+            vertices = part["_generated_mesh"][0]
+        else:
+            config = registry.get(part["type"])
+            if not isinstance(config, Mapping) or config.get("generator") is None:
+                raise RecipeError(f"Unknown or unavailable object type: {part['type']}")
+            parameters = resolve_part_parameters({"object": {"parameters": {}, "parts": [part]}}, part, registry)
+            vertices, _, _ = config["generator"](parameters)
         if vertices:
             for axis, name in enumerate(("width", "height", "depth")):
                 values = [float(vertex[axis]) for vertex in vertices]
@@ -1004,9 +1246,12 @@ def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
     part_definitions = {part["id"]: part for part in flattened["object"]["parts"]}
     local_data = {}
     for part in flattened["object"]["parts"]:
-        config = registry.get(part["type"])
-        parameters = resolve_part_parameters(flattened, part, registry)
-        vertices, faces, edges = config["generator"](parameters)
+        if "_generated_mesh" in part:
+            vertices, faces, edges = part["_generated_mesh"]
+        else:
+            config = registry.get(part["type"])
+            parameters = resolve_part_parameters(flattened, part, registry)
+            vertices, faces, edges = config["generator"](parameters)
         local_data[part["id"]] = {
             "vertices": vertices,
             "faces": [tuple(face) for face in faces],
@@ -1067,9 +1312,9 @@ def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
 
 
 def build_recipe_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
-    """Generate each named part using only an existing registry generator."""
+    """Generate recipe parts through registry or validated generated geometry."""
     checked_recipe = validate_recipe(recipe)
-    if checked_recipe["version"] in {RECIPE_VERSION_V04, RECIPE_VERSION_V05}:
+    if checked_recipe["version"] in {RECIPE_VERSION_V04, RECIPE_VERSION_V05, RECIPE_VERSION_V06}:
         return _build_v04_parts(checked_recipe, registry)
     if checked_recipe["version"] == RECIPE_VERSION_V03:
         return _build_v02_parts(_flatten_v03_recipe(checked_recipe, registry), registry)

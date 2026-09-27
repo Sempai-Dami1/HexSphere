@@ -1,4 +1,5 @@
 import copy
+import math
 
 import pytest
 
@@ -655,3 +656,489 @@ def test_v01_through_v04_geometry_generation_remains_unchanged():
         assert part.vertices == reference.vertices
         assert part.faces == reference.faces
         assert part.edges == reference.edges
+
+
+def raster_stack_part(part_id="stack", transform=None, anchors=None, cell_size=None):
+    part = {
+        "id": part_id,
+        "geometry": {
+            "type": "raster_stack",
+            "profile": "object.profile",
+            "layer_count": 2,
+            "depth": 2.0,
+        },
+    }
+    if cell_size is not None:
+        part["geometry"]["cell_size"] = cell_size
+    if transform is not None:
+        part["transform"] = transform
+    if anchors is not None:
+        part["anchors"] = anchors
+    return part
+
+
+def v06_recipe(profile, parts, connections=None):
+    return {
+        "format": "hexsphere.object-recipe",
+        "version": "0.6",
+        "object": {
+            "name": "Raster stack",
+            "profile": profile,
+            "parameters": {},
+            "parts": parts,
+            "connections": connections or [],
+        },
+    }
+
+
+def assert_closed_triangle_mesh(part):
+    edge_use = {}
+    signed_volume = 0.0
+    for face in part.faces:
+        first, second, third = (part.vertices[index] for index in face)
+        cross = (
+            second[1] * third[2] - second[2] * third[1],
+            second[2] * third[0] - second[0] * third[2],
+            second[0] * third[1] - second[1] * third[0],
+        )
+        signed_volume += sum(first[index] * cross[index] for index in range(3)) / 6.0
+        for index in range(3):
+            edge = tuple(sorted((face[index], face[(index + 1) % 3])))
+            edge_use[edge] = edge_use.get(edge, 0) + 1
+    assert edge_use
+    assert set(edge_use.values()) == {2}
+    assert signed_volume > 0
+
+
+def test_v06_raster_stack_builds_capped_fixed_spacing_mesh():
+    value = v06_recipe(
+        {"type": "raster", "width": 2, "height": 1, "data": [1, 1]},
+        [raster_stack_part(
+            transform={
+                "position": [1.0, 2.0, 3.0],
+                "rotation": [0.0, 0.0, 0.0],
+                "scale": [2.0, 3.0, 4.0],
+            },
+            cell_size=[0.5, 2.0],
+        )],
+    )
+
+    part = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)[0]
+
+    assert part.part_id == "stack"
+    assert part.object_type == "RasterStack"
+    assert len(part.vertices) == 12
+    assert len(part.faces) == 20
+    assert [min(vertex[2] for vertex in part.vertices), max(vertex[2] for vertex in part.vertices)] == [3.0, 11.0]
+    assert [min(vertex[0] for vertex in part.vertices), max(vertex[0] for vertex in part.vertices)] == [1.0, 3.0]
+    assert [min(vertex[1] for vertex in part.vertices), max(vertex[1] for vertex in part.vertices)] == [2.0, 8.0]
+    assert_closed_triangle_mesh(part)
+    combined = object_recipe.build_recipe_geometry(value, streamlit_app.OBJECT_REGISTRY)
+    assert combined == (part.vertices, part.faces, part.edges)
+
+
+def test_v06_raster_stack_preserves_holes_and_splits_diagonal_regions():
+    ring = object_recipe.build_recipe_parts(
+        v06_recipe(
+            {"type": "raster", "width": 3, "height": 3, "data": [1, 1, 1, 1, 0, 1, 1, 1, 1]},
+            [raster_stack_part("ring")],
+        ),
+        streamlit_app.OBJECT_REGISTRY,
+    )[0]
+    diagonal = object_recipe.build_recipe_parts(
+        v06_recipe(
+            {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 0, 1]},
+            [raster_stack_part("diagonal")],
+        ),
+        streamlit_app.OBJECT_REGISTRY,
+    )[0]
+
+    assert len(ring.faces) == 64
+    assert_closed_triangle_mesh(ring)
+    assert len(diagonal.vertices) == 16
+    assert len(diagonal.faces) == 24
+    assert_closed_triangle_mesh(diagonal)
+
+
+def test_v06_raster_stack_uses_existing_anchor_and_connection_pipeline():
+    value = v06_recipe(
+        {"type": "raster", "width": 1, "height": 1, "data": [1]},
+        [
+            raster_stack_part(
+                anchors=[{"name": "mount", "parent": "main", "local_position": [0.5, 0.5, 0.0]}]
+            ),
+            phase2_cube("target", anchors=[{
+                "name": "socket",
+                "parent": "main",
+                "local_position": [0.0, 0.0, 1.0],
+            }]),
+        ],
+        [{
+            "id": "stack-on-target",
+            "part": "stack",
+            "anchor": "mount",
+            "target": {"part": "target", "anchor": "socket"},
+            "mode": "position",
+        }],
+    )
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    stack = next(part for part in parts if part.part_id == "stack")
+
+    assert len(parts) == 2
+    assert min(vertex[2] for vertex in stack.vertices) == pytest.approx(1.0)
+    assert min(vertex[0] for vertex in stack.vertices) == pytest.approx(-0.5)
+
+
+@pytest.mark.parametrize(
+    "profile, geometry, message",
+    [
+        ({"type": "raster", "width": 1, "height": 1, "data": [0]}, raster_stack_part()["geometry"], "empty profile"),
+        ({"type": "raster", "width": 1, "height": 1, "data": [1]}, {"type": "raster_stack", "profile": "other", "layer_count": 2, "depth": 1}, "Invalid recipe structure"),
+        ({"type": "raster", "width": 1, "height": 1, "data": [1]}, {"type": "raster_stack", "profile": "object.profile", "layer_count": 1, "depth": 1}, "Invalid recipe structure"),
+    ],
+)
+def test_v06_raster_stack_rejects_empty_profiles_and_invalid_geometry(profile, geometry, message):
+    part = raster_stack_part()
+    part["geometry"] = geometry
+    value = v06_recipe(profile, [part])
+
+    with pytest.raises(object_recipe.RecipeError, match=message):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_raster_stack_rejects_mesh_over_vertex_budget():
+    profile = {"type": "raster", "width": 128, "height": 128, "data": [1] * (128 * 128)}
+    part = raster_stack_part()
+    part["geometry"]["layer_count"] = 128
+    value = v06_recipe(profile, [part])
+
+    with pytest.raises(object_recipe.RecipeError, match="mesh size limit"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_pyramid_raster_stack_smoke():
+    profile_data = {
+        "type": "raster",
+        "width": 5,
+        "height": 3,
+        "data": [0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1],
+    }
+    profile = object_recipe.load_profile(profile_data)
+    assert object_recipe.profile_dimensions(profile) == (5, 3)
+    occupied_cells = list(object_recipe.iter_occupied_cells(profile))
+    assert occupied_cells == [
+        (2, 0),
+        (1, 1), (2, 1), (3, 1),
+        (0, 2), (1, 2), (2, 2), (3, 2), (4, 2),
+    ]
+
+    stack_part = raster_stack_part(
+        transform={
+            "rotation": [15.0, 0.0, 0.0],
+            "scale": [1.5, 1.0, 0.5],
+        },
+        anchors=[{"name": "base_mount", "parent": "main", "local_position": [0.0, 0.0, 0.0]}],
+    )
+    stack_part["geometry"]["layer_count"] = 4
+    stack_part["geometry"]["depth"] = 6.0
+    value = v06_recipe(
+        profile_data,
+        [
+            stack_part,
+            phase2_cube("anchor_target", anchors=[{
+                "name": "socket",
+                "parent": "main",
+                "local_position": [0.0, 0.0, 1.0],
+            }]),
+        ],
+        [{
+            "id": "pyramid-on-cube",
+            "part": "stack",
+            "anchor": "base_mount",
+            "target": {"part": "anchor_target", "anchor": "socket"},
+            "mode": "position",
+        }],
+    )
+    stack = next(
+        part for part in object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+        if part.part_id == "stack"
+    )
+
+    assert len(occupied_cells) == 9
+    z_levels = sorted({round(vertex[2], 8) for vertex in stack.vertices})
+    assert len(z_levels) == 4
+    assert z_levels[0] == pytest.approx(1.0)
+    assert z_levels[-1] == pytest.approx(4.0)
+    bottom_faces = [
+        face for face in stack.faces
+        if all(stack.vertices[index][2] == pytest.approx(z_levels[0]) for index in face)
+    ]
+    top_faces = [
+        face for face in stack.faces
+        if all(stack.vertices[index][2] == pytest.approx(z_levels[-1]) for index in face)
+    ]
+    side_faces = [
+        face for face in stack.faces
+        if len({round(stack.vertices[index][2], 8) for index in face}) > 1
+    ]
+    assert bottom_faces
+    assert top_faces
+    assert side_faces
+    assert stack.vertices.count((0.0, 0.0, 1.0)) == 1
+    assert math.isclose(z_levels[-1] - z_levels[0], 3.0)
+    mesh_is_finite = all(math.isfinite(value) for vertex in stack.vertices for value in vertex)
+    assert mesh_is_finite
+
+    bounds = tuple(
+        (min(vertex[axis] for vertex in stack.vertices), max(vertex[axis] for vertex in stack.vertices))
+        for axis in range(3)
+    )
+    figure = streamlit_app.build_plotly_figure(
+        stack.vertices,
+        stack.faces,
+        stack.edges,
+        angles=(0, 0, 0),
+    )
+    mesh_trace = figure.data[0]
+    plotly_accepts_mesh = (
+        mesh_trace.type == "mesh3d"
+        and len(mesh_trace.x) == len(stack.vertices)
+        and len(mesh_trace.i) == len(stack.faces)
+        and max(max(mesh_trace.i), max(mesh_trace.j), max(mesh_trace.k)) < len(stack.vertices)
+    )
+    assert plotly_accepts_mesh
+
+    print(f"Profile dimensions: {profile.width} x {profile.height}")
+    print(f"Occupied cell count: {len(occupied_cells)}")
+    print(f"Layer count: {len(z_levels)}")
+    print(f"Vertex count: {len(stack.vertices)}")
+    print(f"Face count: {len(stack.faces)}")
+    print(f"Edge count: {len(stack.edges)}")
+    print(f"Bounds: X={bounds[0]}, Y={bounds[1]}, Z={bounds[2]}")
+    print(f"Mesh finite: {mesh_is_finite}")
+    print(f"Plotly accepts it: {plotly_accepts_mesh}")
+    print("PHASE 5B EXTRUSION SMOKE TEST READY")
+
+
+def stack_evolution_part(layer_count=3, evolution=None):
+    part = raster_stack_part()
+    part["geometry"]["layer_count"] = layer_count
+    part["geometry"]["depth"] = 2.0
+    if evolution is not None:
+        part["geometry"]["evolution"] = {
+            "model": "original_profile",
+            "interpolation": "linear",
+            **evolution,
+        }
+    return part
+
+
+def build_evolved_stack(profile, evolution=None, layer_count=3):
+    value = v06_recipe(profile, [stack_evolution_part(layer_count, evolution)])
+    return object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)[0]
+
+
+def layer_xy_bounds(part, z):
+    layer_vertices = [vertex for vertex in part.vertices if vertex[2] == pytest.approx(z)]
+    return (
+        min(vertex[0] for vertex in layer_vertices),
+        max(vertex[0] for vertex in layer_vertices),
+        min(vertex[1] for vertex in layer_vertices),
+        max(vertex[1] for vertex in layer_vertices),
+    )
+
+
+def test_v06_evolution_absent_is_identity():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    without = build_evolved_stack(profile)
+    with_empty_evolution = build_evolved_stack(profile, {})
+
+    assert without.vertices == with_empty_evolution.vertices
+    assert without.faces == with_empty_evolution.faces
+
+
+def test_v06_evolution_shift_only_interpolates_from_original_profile():
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    part = build_evolved_stack(profile, {"shift": {"start": [0, 0], "end": [2, 1]}})
+
+    assert layer_xy_bounds(part, 0.0) == pytest.approx((0, 1, 0, 1))
+    assert layer_xy_bounds(part, 1.0) == pytest.approx((1, 2, 0.5, 1.5))
+    assert layer_xy_bounds(part, 2.0) == pytest.approx((2, 3, 1, 2))
+
+
+def test_v06_evolution_rotation_only_uses_canvas_center():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    part = build_evolved_stack(profile, {"rotation_degrees": {"start": 0, "end": 90}})
+
+    assert layer_xy_bounds(part, 1.0) == pytest.approx((-0.0606601718, 2.0606601718, -0.5606601718, 1.5606601718))
+
+
+def test_v06_evolution_rotation_interpolates_without_angle_wrap():
+    profile = {"type": "raster", "width": 2, "height": 2, "data": [1, 1, 1, 0]}
+    part = build_evolved_stack(profile, {"rotation_degrees": {"start": 350, "end": 10}})
+    rotated_profile = {"type": "raster", "width": 2, "height": 2, "data": [0, 1, 1, 1]}
+    expected = build_evolved_stack(rotated_profile)
+
+    midpoint_vertices = {
+        tuple(round(value, 8) for value in vertex[:2])
+        for vertex in part.vertices if vertex[2] == pytest.approx(1.0)
+    }
+    expected_vertices = {
+        tuple(round(value, 8) for value in vertex[:2])
+        for vertex in expected.vertices if vertex[2] == pytest.approx(1.0)
+    }
+    assert midpoint_vertices == expected_vertices
+
+
+def test_v06_evolution_scale_only_uses_canvas_center():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    part = build_evolved_stack(profile, {"scale": {"start": [1, 1], "end": [2, 2]}})
+
+    assert layer_xy_bounds(part, 1.0) == pytest.approx((-0.5, 2.5, -0.25, 1.25))
+
+
+def test_v06_evolution_combines_scale_rotation_then_shift():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    evolution = {
+        "shift": {"start": [0, 0], "end": [2, 0]},
+        "rotation_degrees": {"start": 0, "end": 90},
+        "scale": {"start": [1, 1], "end": [2, 1]},
+    }
+    part = build_evolved_stack(profile, evolution)
+
+    assert layer_xy_bounds(part, 1.0) == pytest.approx((0.5857864376, 3.4142135624, -0.9142135624, 1.9142135624))
+
+
+def test_v06_evolution_supports_multiple_layer_interpolation_and_is_finite():
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    part = build_evolved_stack(
+        profile,
+        {"shift": {"start": [0, 0], "end": [3, 0]}},
+        layer_count=4,
+    )
+
+    assert [layer_xy_bounds(part, z)[0] for z in (0, 2 / 3, 4 / 3, 2)] == pytest.approx([0, 1, 2, 3])
+    assert all(math.isfinite(value) for vertex in part.vertices for value in vertex)
+
+
+def test_v06_evolved_stack_builds_deterministically():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    evolution = {
+        "shift": {"start": [0, 0], "end": [1, -1]},
+        "rotation_degrees": {"start": 10, "end": 70},
+        "scale": {"start": [1, 1], "end": [1.5, 2]},
+    }
+    first = build_evolved_stack(profile, evolution, layer_count=5)
+    second = build_evolved_stack(profile, evolution, layer_count=5)
+
+    assert first.vertices == second.vertices
+    assert first.faces == second.faces
+    assert first.edges == second.edges
+
+
+def test_v06_declarative_recipe_matches_raster_to_solid_concept():
+    """Represent raster orientation, stacking, and layer evolution declaratively.
+
+    The former raster-to-solid workflow's semantics are represented as an
+    Object Recipe profile, stack geometry, evolution settings, and part
+    transform. This fixture does not import or reproduce any C++ binary format.
+    """
+    recipe_fixture = v06_recipe(
+        {
+            "type": "raster",
+            "width": 3,
+            "height": 2,
+            "data": [0, 1, 0, 1, 1, 1],
+        },
+        [
+            {
+                "id": "evolved_silhouette",
+                "geometry": {
+                    "type": "raster_stack",
+                    "profile": "object.profile",
+                    "layer_count": 4,
+                    "depth": 3.0,
+                    "cell_size": [1.0, 1.0],
+                    "evolution": {
+                        "model": "original_profile",
+                        "interpolation": "linear",
+                        "shift": {"start": [0.0, 0.0], "end": [0.5, 0.0]},
+                        "rotation_degrees": {"start": 0.0, "end": 30.0},
+                        "scale": {"start": [1.0, 1.0], "end": [1.0, 1.25]},
+                    },
+                },
+                "transform": {
+                    "position": [1.0, 2.0, 3.0],
+                    "rotation": [90.0, 0.0, 0.0],
+                    "scale": [1.0, 1.0, 1.0],
+                },
+            }
+        ],
+    )
+
+    profile = object_recipe.load_profile(recipe_fixture["object"]["profile"])
+    first = object_recipe.build_recipe_parts(recipe_fixture, streamlit_app.OBJECT_REGISTRY)[0]
+    second = object_recipe.build_recipe_parts(recipe_fixture, streamlit_app.OBJECT_REGISTRY)[0]
+
+    assert object_recipe.profile_dimensions(profile) == (3, 2)
+    assert len(list(object_recipe.iter_occupied_cells(profile))) == 4
+    assert first.part_id == "evolved_silhouette"
+    assert first.vertices == second.vertices
+    assert first.faces == second.faces
+    assert first.edges == second.edges
+    assert all(math.isfinite(value) for vertex in first.vertices for value in vertex)
+    assert_closed_triangle_mesh(first)
+
+
+@pytest.mark.parametrize(
+    "evolution",
+    [
+        {"shift": {"start": [0, 0], "end": [10001, 0]}},
+        {"rotation_degrees": {"start": 0, "end": 3601}},
+        {"scale": {"start": [1, 1], "end": [0, 1]}},
+        {"scale": {"start": [1, 1], "end": [-1, 1]}},
+        {"shift": {"start": [0, 0]}},
+        {"shift": {"start": [0, 0], "end": [0, 0], "expression": {"$expr": {"op": "add", "args": [1, 2]}}}},
+    ],
+)
+def test_v06_evolution_rejects_invalid_values(evolution):
+    value = v06_recipe(
+        {"type": "raster", "width": 1, "height": 1, "data": [1]},
+        [stack_evolution_part(evolution=evolution)],
+    )
+
+    with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
+        object_recipe.validate_recipe(value)
+
+
+def test_v06_evolved_generated_part_keeps_v04_snap_behavior():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    stack = stack_evolution_part()
+    stack["anchors"] = [{
+        "name": "mount",
+        "parent": "main",
+        "local_position": [1.0, 0.5, 0.0],
+        "local_rotation": [0.0, 0.0, 0.0],
+    }]
+    target = phase2_cube("target", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 2.0, 0.0],
+        "local_rotation": [90.0, 0.0, 0.0],
+    }])
+    value = v06_recipe(profile, [stack, target], [{
+        "id": "stack-snap",
+        "part": "stack",
+        "anchor": "mount",
+        "target": {"part": "target", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [0.0, 0.0, 0.0],
+    }])
+
+    built = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    stack_mesh = next(part for part in built if part.part_id == "stack")
+
+    assert len(built) == 2
+    assert max(vertex[1] for vertex in stack_mesh.vertices) - min(vertex[1] for vertex in stack_mesh.vertices) == pytest.approx(2.0)
+    assert max(vertex[0] for vertex in stack_mesh.vertices) - min(vertex[0] for vertex in stack_mesh.vertices) == pytest.approx(1.0)
