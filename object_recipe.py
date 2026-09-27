@@ -116,6 +116,18 @@ STACK_EVOLUTION_SCALE_LIMITS = (
     RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["minimum"],
     RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["maximum"],
 )
+ROTATIONAL_ANGLE_SEGMENT_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["angularSegments"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["angularSegments"]["maximum"],
+)
+ROTATIONAL_AXIS_COORDINATE_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["constructionCoordinate"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["constructionCoordinate"]["maximum"],
+)
+TORUS_AXIS_OFFSET_LIMITS = (
+    RECIPE_SCHEMA_V06["$defs"]["rasterTorusGeometry"]["properties"]["axis_offset"]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["rasterTorusGeometry"]["properties"]["axis_offset"]["maximum"],
+)
 _RECIPE_VALIDATORS = {
     RECIPE_VERSION: Draft202012Validator(RECIPE_SCHEMA),
     RECIPE_VERSION_V02: Draft202012Validator(RECIPE_SCHEMA_V02),
@@ -389,6 +401,329 @@ def _build_raster_stack_mesh(
     }
     edges = sorted(edge_set)
     return vertices, faces, edges
+
+
+def _build_raster_revolution_mesh(
+    profile_value: Mapping[str, Any], geometry: Mapping[str, Any], torus: bool = False
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], list[tuple[int, int]]]:
+    profile = load_profile(profile_value)
+    expected_type = "raster_torus" if torus else "raster_revolution"
+    if geometry.get("type") != expected_type:
+        raise RecipeError(f"Expected {expected_type} geometry.")
+
+    angular_segments = geometry.get("angular_segments")
+    if (
+        isinstance(angular_segments, bool)
+        or not isinstance(angular_segments, int)
+        or not ROTATIONAL_ANGLE_SEGMENT_LIMITS[0] <= angular_segments <= ROTATIONAL_ANGLE_SEGMENT_LIMITS[1]
+    ):
+        raise RecipeError("Angular segment count is outside the allowed range.")
+    cell_size = geometry.get("cell_size", [1.0, 1.0])
+    if not isinstance(cell_size, (list, tuple)) or len(cell_size) != 2:
+        raise RecipeError("Rotational cell_size must contain two dimensions.")
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not STACK_CELL_SIZE_LIMITS[0] <= value <= STACK_CELL_SIZE_LIMITS[1]
+        for value in cell_size
+    ):
+        raise RecipeError("Rotational cell dimensions are outside the allowed finite range.")
+    cell_width, cell_height = (float(value) for value in cell_size)
+    profile_offset = geometry.get("profile_offset", [0.0, 0.0])
+    if (
+        not isinstance(profile_offset, (list, tuple))
+        or len(profile_offset) != 2
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or abs(value) > MAX_ABS_NUMBER
+            for value in profile_offset
+        )
+    ):
+        raise RecipeError("Rotational profile_offset must contain two finite bounded coordinates.")
+    offset_x, offset_y = (float(value) for value in profile_offset)
+
+    clipping = geometry.get("clipping")
+    if clipping is not None:
+        if not isinstance(clipping, Mapping):
+            raise RecipeError("Raster clipping must be an object.")
+        clip_side = clipping.get("side")
+        axis_column = clipping.get("axis_column")
+        if (
+            clip_side not in {"left", "right"}
+            or isinstance(axis_column, bool)
+            or not isinstance(axis_column, int)
+            or not 0 <= axis_column <= profile.width
+        ):
+            raise RecipeError("Raster clipping axis_column must be a grid boundary within the profile.")
+    else:
+        clip_side = None
+        axis_column = None
+
+    occupied = {
+        (column, profile.height - row - 1)
+        for column, row in profile.iter_occupied_cells()
+        if clipping is None
+        or (clip_side == "left" and column < axis_column)
+        or (clip_side == "right" and column >= axis_column)
+    }
+    if not occupied:
+        if clipping is None:
+            raise RecipeError("Cannot construct rotational geometry from an empty raster profile.")
+        raise RecipeError("Raster profile is empty after clipping.")
+
+    if torus:
+        axis_mode = geometry.get("axis_mode")
+        if axis_mode == "clip_axis":
+            if clipping is None:
+                raise RecipeError("A clip-axis torus requires raster clipping.")
+            axis_origin = (offset_x + axis_column * cell_width, offset_y)
+        elif axis_mode == "offset_from_profile":
+            axis_side = geometry.get("axis_side")
+            axis_offset = geometry.get("axis_offset")
+            if (
+                axis_side not in {"left", "right"}
+                or isinstance(axis_offset, bool)
+                or not isinstance(axis_offset, (int, float))
+                or not math.isfinite(axis_offset)
+                or not TORUS_AXIS_OFFSET_LIMITS[0] <= axis_offset <= TORUS_AXIS_OFFSET_LIMITS[1]
+            ):
+                raise RecipeError("Offset-axis torus requires a valid side and positive bounded axis_offset.")
+            minimum_x = min(cell[0] for cell in occupied) * cell_width + offset_x
+            maximum_x = (max(cell[0] for cell in occupied) + 1) * cell_width + offset_x
+            axis_x = minimum_x - axis_offset if axis_side == "left" else maximum_x + axis_offset
+            axis_origin = (axis_x, offset_y)
+        else:
+            raise RecipeError("Unsupported torus axis mode.")
+        axis_direction = (0.0, 1.0)
+    else:
+        axis = geometry.get("axis")
+        if not isinstance(axis, Mapping):
+            raise RecipeError("Revolution axis must define an origin and direction.")
+        axis_origin = axis.get("origin")
+        axis_direction = axis.get("direction")
+        if (
+            not isinstance(axis_origin, (list, tuple))
+            or len(axis_origin) != 2
+            or not isinstance(axis_direction, (list, tuple))
+            or len(axis_direction) != 2
+        ):
+            raise RecipeError("Revolution axis origin and direction must be 2D vectors.")
+        for coordinate in (*axis_origin, *axis_direction):
+            if isinstance(coordinate, bool) or not isinstance(coordinate, (int, float)) or not math.isfinite(coordinate):
+                raise RecipeError("Revolution axis must contain finite numeric values.")
+            if not ROTATIONAL_AXIS_COORDINATE_LIMITS[0] <= coordinate <= ROTATIONAL_AXIS_COORDINATE_LIMITS[1]:
+                raise RecipeError("Revolution axis coordinates exceed the allowed range.")
+        axis_origin = (float(axis_origin[0]), float(axis_origin[1]))
+        direction_length = math.hypot(float(axis_direction[0]), float(axis_direction[1]))
+        if direction_length <= 1e-12:
+            raise RecipeError("Revolution axis direction cannot be zero.")
+        axis_direction = (float(axis_direction[0]) / direction_length, float(axis_direction[1]) / direction_length)
+
+    plane_name = geometry.get("construction_plane", "xy")
+    plane_basis = {
+        "xy": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        "xz": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        "yz": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    }.get(plane_name)
+    if plane_basis is None:
+        raise RecipeError("Unsupported rotational construction plane.")
+    basis_u, basis_v = plane_basis
+    plane_normal = (
+        basis_u[1] * basis_v[2] - basis_u[2] * basis_v[1],
+        basis_u[2] * basis_v[0] - basis_u[0] * basis_v[2],
+        basis_u[0] * basis_v[1] - basis_u[1] * basis_v[0],
+    )
+    direction_u, direction_v = axis_direction
+    radial_basis_2d = (direction_v, -direction_u)
+    axis_direction_3d = tuple(direction_u * basis_u[i] + direction_v * basis_v[i] for i in range(3))
+    radial_basis_3d = tuple(radial_basis_2d[0] * basis_u[i] + radial_basis_2d[1] * basis_v[i] for i in range(3))
+    axis_origin_3d = tuple(axis_origin[0] * basis_u[i] + axis_origin[1] * basis_v[i] for i in range(3))
+
+    cell_corners = {
+        cell: (
+            (cell[0], cell[1]),
+            (cell[0] + 1, cell[1]),
+            (cell[0] + 1, cell[1] + 1),
+            (cell[0], cell[1] + 1),
+        )
+        for cell in occupied
+    }
+    grid_corners = {corner for corners in cell_corners.values() for corner in corners}
+    vertex_keys_by_cell_corner = {}
+    for grid_x, grid_y in grid_corners:
+        incident = {
+            (cell_x, cell_y)
+            for cell_x in (grid_x - 1, grid_x)
+            for cell_y in (grid_y - 1, grid_y)
+            if (cell_x, cell_y) in occupied
+        }
+        remaining = set(incident)
+        while remaining:
+            seed = min(remaining)
+            component = {seed}
+            pending = [seed]
+            remaining.remove(seed)
+            while pending:
+                cell_x, cell_y = pending.pop()
+                neighbors = [
+                    neighbor for neighbor in remaining
+                    if abs(neighbor[0] - cell_x) + abs(neighbor[1] - cell_y) == 1
+                ]
+                for neighbor in neighbors:
+                    remaining.remove(neighbor)
+                    component.add(neighbor)
+                    pending.append(neighbor)
+            fan_id = min(component)
+            for cell in component:
+                vertex_keys_by_cell_corner[(cell, (grid_x, grid_y))] = (grid_x, grid_y, *fan_id)
+
+    vertex_keys = sorted(set(vertex_keys_by_cell_corner.values()))
+    exposed_edges = []
+    for cell_x, cell_y in sorted(occupied):
+        corners = cell_corners[(cell_x, cell_y)]
+        neighbors = (
+            (cell_x, cell_y - 1),
+            (cell_x + 1, cell_y),
+            (cell_x, cell_y + 1),
+            (cell_x - 1, cell_y),
+        )
+        for edge_index, neighbor in enumerate(neighbors):
+            if neighbor not in occupied:
+                exposed_edges.append((
+                    cell_x,
+                    cell_y,
+                    corners[edge_index],
+                    corners[(edge_index + 1) % 4],
+                ))
+
+    def profile_point(key: tuple[int, ...]) -> tuple[float, float]:
+        return key[0] * cell_width + offset_x, key[1] * cell_height + offset_y
+
+    def axis_coordinates(point: tuple[float, float]) -> tuple[float, float]:
+        relative = (point[0] - axis_origin[0], point[1] - axis_origin[1])
+        axial = relative[0] * direction_u + relative[1] * direction_v
+        radial = relative[0] * radial_basis_2d[0] + relative[1] * radial_basis_2d[1]
+        return axial, radial
+
+    positive_radius = False
+    negative_radius = False
+    for cell in occupied:
+        radii = [axis_coordinates(profile_point(corner))[1] for corner in cell_corners[cell]]
+        if min(radii) < -1e-9 and max(radii) > 1e-9:
+            raise RecipeError("Revolution axis intersects occupied profile geometry.")
+        positive_radius = positive_radius or max(radii) > 1e-9
+        negative_radius = negative_radius or min(radii) < -1e-9
+    if positive_radius and negative_radius:
+        raise RecipeError("Revolution axis intersects occupied profile geometry.")
+    if not positive_radius and not negative_radius:
+        raise RecipeError("Revolution axis contains the entire occupied profile.")
+    radial_sign = -1.0 if negative_radius else 1.0
+
+    radial_by_key = {}
+    for key in vertex_keys:
+        radial_by_key[key] = axis_coordinates(profile_point(key))[1]
+    face_count_per_segment = sum(
+        0 if abs(radial_by_key[vertex_keys_by_cell_corner[((cell_x, cell_y), start)]]) <= 1e-9
+        and abs(radial_by_key[vertex_keys_by_cell_corner[((cell_x, cell_y), end)]]) <= 1e-9
+        else 1 if (
+            abs(radial_by_key[vertex_keys_by_cell_corner[((cell_x, cell_y), start)]]) <= 1e-9
+            or abs(radial_by_key[vertex_keys_by_cell_corner[((cell_x, cell_y), end)]]) <= 1e-9
+        )
+        else 2
+        for cell_x, cell_y, start, end in exposed_edges
+    )
+    estimated_faces = face_count_per_segment * angular_segments
+    estimated_vertices = len(vertex_keys) * angular_segments
+    if estimated_faces > MAX_STACK_TRIANGLES or estimated_vertices > MAX_STACK_VERTICES:
+        raise RecipeError("Rotational mesh exceeds the generated mesh size limit.")
+
+    vertices = []
+    vertex_indices = {}
+    axis_vertex_indices = {}
+    for angle_index in range(angular_segments):
+        angle = math.tau * angle_index / angular_segments
+        cosine, sine = math.cos(angle), math.sin(angle)
+        for key in vertex_keys:
+            axial, signed_radius = axis_coordinates(profile_point(key))
+            radius = signed_radius
+            point = tuple(
+                axis_origin_3d[i]
+                + axial * axis_direction_3d[i]
+                + radius * (cosine * radial_basis_3d[i] - sine * plane_normal[i])
+                for i in range(3)
+            )
+            if any(not math.isfinite(value) or abs(value) > MAX_ABS_NUMBER for value in point):
+                raise RecipeError("Rotational mesh generated a coordinate outside the allowed range.")
+            if abs(radius) <= 1e-9 and key in axis_vertex_indices:
+                vertex_indices[(angle_index, key)] = axis_vertex_indices[key]
+            else:
+                vertex_index = len(vertices)
+                vertex_indices[(angle_index, key)] = vertex_index
+                vertices.append(point)
+                if abs(radius) <= 1e-9:
+                    axis_vertex_indices[key] = vertex_index
+
+    def oriented_face(face: tuple[int, int, int]) -> tuple[int, int, int]:
+        return face if radial_sign > 0 else (face[0], face[2], face[1])
+
+    faces = []
+    for cell_x, cell_y, edge_start, edge_end in exposed_edges:
+        start_key = vertex_keys_by_cell_corner[((cell_x, cell_y), edge_start)]
+        end_key = vertex_keys_by_cell_corner[((cell_x, cell_y), edge_end)]
+        start_on_axis = abs(radial_by_key[start_key]) <= 1e-9
+        end_on_axis = abs(radial_by_key[end_key]) <= 1e-9
+        if start_on_axis and end_on_axis:
+            continue
+        for angle_index in range(angular_segments):
+            next_angle = (angle_index + 1) % angular_segments
+            start0 = vertex_indices[(angle_index, start_key)]
+            end0 = vertex_indices[(angle_index, end_key)]
+            end1 = vertex_indices[(next_angle, end_key)]
+            start1 = vertex_indices[(next_angle, start_key)]
+            if start_on_axis:
+                faces.append(oriented_face((start0, end0, end1)))
+            elif end_on_axis:
+                faces.append(oriented_face((start0, end1, start1)))
+            else:
+                faces.extend((
+                    oriented_face((start0, end0, end1)),
+                    oriented_face((start0, end1, start1)),
+                ))
+
+    signed_volume = 0.0
+    for face in faces:
+        first, second, third = (vertices[index] for index in face)
+        cross = (
+            second[1] * third[2] - second[2] * third[1],
+            second[2] * third[0] - second[0] * third[2],
+            second[0] * third[1] - second[1] * third[0],
+        )
+        signed_volume += sum(first[index] * cross[index] for index in range(3)) / 6.0
+    if signed_volume < 0:
+        faces = [(face[0], face[2], face[1]) for face in faces]
+
+    edge_set = {
+        tuple(sorted((face[index], face[(index + 1) % 3])))
+        for face in faces
+        for index in range(3)
+    }
+    return vertices, faces, sorted(edge_set)
+
+
+def _build_raster_operation_mesh(
+    profile_value: Mapping[str, Any], geometry: Mapping[str, Any]
+) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], list[tuple[int, int]]]:
+    geometry_type = geometry.get("type")
+    if geometry_type == "raster_stack":
+        return _build_raster_stack_mesh(profile_value, geometry)
+    if geometry_type == "raster_revolution":
+        return _build_raster_revolution_mesh(profile_value, geometry)
+    if geometry_type == "raster_torus":
+        return _build_raster_revolution_mesh(profile_value, geometry, torus=True)
+    raise RecipeError(f"Unsupported raster geometry type: {geometry_type}")
 
 
 def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -924,8 +1259,12 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     for part in obj.get("parts", []):
         copied = dict(part)
         if "geometry" in part:
-            vertices, faces, edges = _build_raster_stack_mesh(obj["profile"], part["geometry"])
-            copied["type"] = "RasterStack"
+            vertices, faces, edges = _build_raster_operation_mesh(obj["profile"], part["geometry"])
+            copied["type"] = {
+                "raster_stack": "RasterStack",
+                "raster_revolution": "RasterRevolution",
+                "raster_torus": "RasterTorus",
+            }[part["geometry"]["type"]]
             copied["parameters"] = {}
             copied["_generated_mesh"] = (vertices, faces, edges)
         else:

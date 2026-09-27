@@ -121,6 +121,82 @@
       },
       "additionalProperties": false
     },
+    "constructionCoordinate": {"type": "number", "minimum": -1000000, "maximum": 1000000},
+    "point2": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/constructionCoordinate"},
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "axisDirection2": {
+      "type": "array",
+      "items": {"type": "number", "minimum": -1, "maximum": 1},
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "revolutionAxis": {
+      "type": "object",
+      "required": ["origin", "direction"],
+      "properties": {
+        "origin": {"$ref": "#/$defs/point2"},
+        "direction": {"$ref": "#/$defs/axisDirection2"}
+      },
+      "additionalProperties": false
+    },
+    "constructionPlane": {"enum": ["xy", "xz", "yz"]},
+    "angularSegments": {"type": "integer", "minimum": 3, "maximum": 256},
+    "rasterClipping": {
+      "type": "object",
+      "description": "Grid-aligned vertical clipping axis. Left retains columns strictly less than axis_column; right retains columns greater than or equal to axis_column. Omit clipping for the full raster.",
+      "required": ["side", "axis_column"],
+      "properties": {
+        "side": {"enum": ["left", "right"]},
+        "axis_column": {"type": "integer", "minimum": 0, "maximum": 128}
+      },
+      "additionalProperties": false
+    },
+    "rasterRevolutionGeometry": {
+      "type": "object",
+      "description": "Revolve the clipped filled raster boundary by angular_segments around the explicit 2D axis in the selected construction plane. Raster X/Y map to XY, XZ, or YZ; each swept point rotates from its in-plane radial direction toward the plane normal. Normalize axis direction. The axis may touch the profile boundary but may not cross occupied interior. Sample angles cover [0, 2*pi) without a duplicate seam ring; the final segment connects back to the first. Vertices on the axis are collapsed and axis-aligned boundary edges are omitted.",
+      "required": ["type", "construction_plane", "angular_segments", "axis"],
+      "properties": {
+        "type": {"const": "raster_revolution"},
+        "construction_plane": {"$ref": "#/$defs/constructionPlane"},
+        "angular_segments": {"$ref": "#/$defs/angularSegments"},
+        "axis": {"$ref": "#/$defs/revolutionAxis"},
+        "cell_size": {"$ref": "#/$defs/cellSize"},
+        "profile_offset": {"$ref": "#/$defs/point2"},
+        "clipping": {"$ref": "#/$defs/rasterClipping"}
+      },
+      "additionalProperties": false
+    },
+    "rasterTorusGeometry": {
+      "type": "object",
+      "description": "Revolve the clipped filled raster boundary without layer evolution. axis_mode clip_axis revolves around the vertical clipping axis; offset_from_profile places a parallel vertical axis at axis_offset from the selected profile bound.",
+      "required": ["type", "construction_plane", "angular_segments", "axis_mode"],
+      "properties": {
+        "type": {"const": "raster_torus"},
+        "construction_plane": {"$ref": "#/$defs/constructionPlane"},
+        "angular_segments": {"$ref": "#/$defs/angularSegments"},
+        "cell_size": {"$ref": "#/$defs/cellSize"},
+        "profile_offset": {"$ref": "#/$defs/point2"},
+        "clipping": {"$ref": "#/$defs/rasterClipping"},
+        "axis_mode": {"enum": ["clip_axis", "offset_from_profile"]},
+        "axis_side": {"enum": ["left", "right"]},
+        "axis_offset": {"type": "number", "minimum": 0.01, "maximum": 10000}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"axis_mode": {"const": "clip_axis"}}},
+          "then": {"required": ["clipping"], "not": {"anyOf": [{"required": ["axis_side"]}, {"required": ["axis_offset"]}]}}
+        },
+        {
+          "if": {"properties": {"axis_mode": {"const": "offset_from_profile"}}},
+          "then": {"required": ["axis_side", "axis_offset"]}
+        }
+      ],
+      "additionalProperties": false
+    },
     "number": {"type": "number", "minimum": -1000000, "maximum": 1000000},
     "value": {
       "anyOf": [
@@ -198,10 +274,34 @@
       },
       "additionalProperties": false
     },
+    "revolutionPart": {
+      "type": "object",
+      "required": ["id", "geometry"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 160},
+        "geometry": {"$ref": "#/$defs/rasterRevolutionGeometry"},
+        "transform": {"$ref": "#/$defs/transform"},
+        "anchors": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/anchor"}}
+      },
+      "additionalProperties": false
+    },
+    "torusPart": {
+      "type": "object",
+      "required": ["id", "geometry"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 160},
+        "geometry": {"$ref": "#/$defs/rasterTorusGeometry"},
+        "transform": {"$ref": "#/$defs/transform"},
+        "anchors": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/anchor"}}
+      },
+      "additionalProperties": false
+    },
     "recipePart": {
       "oneOf": [
         {"$ref": "#/$defs/part"},
-        {"$ref": "#/$defs/stackPart"}
+        {"$ref": "#/$defs/stackPart"},
+        {"$ref": "#/$defs/revolutionPart"},
+        {"$ref": "#/$defs/torusPart"}
       ]
     },
     "target": {
@@ -297,7 +397,11 @@
         "replications": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/replication"}}
       },
       "allOf": [{
-        "if": {"properties": {"parts": {"contains": {"$ref": "#/$defs/stackPart"}}}},
+        "if": {"properties": {"parts": {"contains": {"anyOf": [
+          {"$ref": "#/$defs/stackPart"},
+          {"$ref": "#/$defs/revolutionPart"},
+          {"$ref": "#/$defs/torusPart"}
+        ]}}}},
         "then": {"required": ["profile"]}
       }],
       "additionalProperties": false

@@ -2,6 +2,7 @@ import copy
 import math
 
 import pytest
+from PIL import Image, ImageDraw, ImageFont
 
 import object_recipe
 import streamlit_app
@@ -1142,3 +1143,429 @@ def test_v06_evolved_generated_part_keeps_v04_snap_behavior():
     assert len(built) == 2
     assert max(vertex[1] for vertex in stack_mesh.vertices) - min(vertex[1] for vertex in stack_mesh.vertices) == pytest.approx(2.0)
     assert max(vertex[0] for vertex in stack_mesh.vertices) - min(vertex[0] for vertex in stack_mesh.vertices) == pytest.approx(1.0)
+
+
+def raster_operation_part(operation, part_id="rotated", **geometry_fields):
+    return {"id": part_id, "geometry": {"type": f"raster_{operation}", **geometry_fields}}
+
+
+def build_raster_operation(profile, part):
+    return object_recipe.build_recipe_parts(v06_recipe(profile, [part]), streamlit_app.OBJECT_REGISTRY)[0]
+
+
+def assert_valid_rotational_mesh(part):
+    assert part.vertices
+    assert part.faces
+    for face in part.faces:
+        assert len(face) == 3
+        assert all(0 <= index < len(part.vertices) for index in face)
+        first, second, third = (part.vertices[index] for index in face)
+        edge_a = tuple(second[axis] - first[axis] for axis in range(3))
+        edge_b = tuple(third[axis] - first[axis] for axis in range(3))
+        cross = (
+            edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
+            edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
+            edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
+        )
+        assert sum(value * value for value in cross) > 1e-16
+    assert_closed_triangle_mesh(part)
+    assert all(math.isfinite(value) for vertex in part.vertices for value in vertex)
+
+
+def revolution_geometry(**overrides):
+    geometry = {
+        "construction_plane": "xy",
+        "angular_segments": 12,
+        "axis": {"origin": [0.0, 0.0], "direction": [0.0, 1.0]},
+    }
+    geometry.update(overrides)
+    return geometry
+
+
+def torus_geometry(**overrides):
+    geometry = {
+        "construction_plane": "xy",
+        "angular_segments": 12,
+        "axis_mode": "offset_from_profile",
+        "axis_side": "right",
+        "axis_offset": 1.0,
+    }
+    geometry.update(overrides)
+    if geometry["axis_mode"] == "clip_axis":
+        geometry.pop("axis_side", None)
+        geometry.pop("axis_offset", None)
+    return geometry
+
+
+def test_v06_raster_revolution_full_asymmetric_profile_and_seam():
+    profile = {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}
+    part = build_raster_operation(
+        profile,
+        raster_operation_part(
+            "revolution",
+            **revolution_geometry(axis={"origin": [-1, 0], "direction": [0, 1]}, angular_segments=16),
+        ),
+    )
+
+    assert part.object_type == "RasterRevolution"
+    assert len(set(part.vertices)) == len(part.vertices)
+    assert_valid_rotational_mesh(part)
+
+
+def test_v06_raster_revolution_supports_construction_plane_orientation():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    part = build_raster_operation(
+        profile,
+        raster_operation_part(
+            "revolution",
+            **revolution_geometry(
+                construction_plane="xz",
+                axis={"origin": [-1, 0], "direction": [0, 1]},
+            ),
+        ),
+    )
+
+    assert max(vertex[1] for vertex in part.vertices) > min(vertex[1] for vertex in part.vertices)
+    assert max(vertex[2] for vertex in part.vertices) > min(vertex[2] for vertex in part.vertices)
+    assert_valid_rotational_mesh(part)
+
+
+@pytest.mark.parametrize("side, axis_column", [("left", 2), ("right", 1)])
+def test_v06_raster_revolution_clips_requested_raster_side(side, axis_column):
+    profile = {"type": "raster", "width": 3, "height": 2, "data": [0, 0, 1, 1, 1, 0]}
+    part = build_raster_operation(
+        profile,
+        raster_operation_part(
+            "revolution",
+            clipping={"side": side, "axis_column": axis_column},
+            **revolution_geometry(axis={"origin": [axis_column, 0], "direction": [0, 1]}),
+        ),
+    )
+
+    assert_valid_rotational_mesh(part)
+
+
+def test_v06_raster_revolution_clipping_sides_retain_distinct_asymmetric_regions():
+    profile = {"type": "raster", "width": 3, "height": 2, "data": [0, 0, 1, 1, 1, 0]}
+    left = build_raster_operation(
+        profile,
+        raster_operation_part(
+            "revolution",
+            clipping={"side": "left", "axis_column": 1},
+            **revolution_geometry(axis={"origin": [1, 0], "direction": [0, 1]}),
+        ),
+    )
+    right = build_raster_operation(
+        profile,
+        raster_operation_part(
+            "revolution",
+            clipping={"side": "right", "axis_column": 1},
+            **revolution_geometry(axis={"origin": [1, 0], "direction": [0, 1]}),
+        ),
+    )
+
+    assert len(right.faces) > len(left.faces)
+
+
+def test_v06_raster_revolution_resolution_determinism_and_transform():
+    profile = {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}
+    axis = {"origin": [-1, 0], "direction": [0, 1]}
+    low = raster_operation_part("revolution", **revolution_geometry(axis=axis, angular_segments=8))
+    high = raster_operation_part("revolution", **revolution_geometry(axis=axis, angular_segments=16))
+    transformed = dict(low)
+    transformed["transform"] = {"position": [2, 3, 4], "rotation": [0, 0, 0], "scale": [2, 1, 1]}
+
+    low_mesh = build_raster_operation(profile, low)
+    high_mesh = build_raster_operation(profile, high)
+    first = build_raster_operation(profile, transformed)
+    second = build_raster_operation(profile, transformed)
+    low_x_bounds = (min(vertex[0] for vertex in low_mesh.vertices), max(vertex[0] for vertex in low_mesh.vertices))
+
+    assert len(high_mesh.vertices) == 2 * len(low_mesh.vertices)
+    assert len(high_mesh.faces) == 2 * len(low_mesh.faces)
+    assert first.vertices == second.vertices
+    assert first.faces == second.faces
+    assert first.edges == second.edges
+    assert (min(vertex[0] for vertex in first.vertices), max(vertex[0] for vertex in first.vertices)) == pytest.approx(
+        (2.0 + 2.0 * low_x_bounds[0], 2.0 + 2.0 * low_x_bounds[1])
+    )
+    assert_valid_rotational_mesh(first)
+
+
+@pytest.mark.parametrize(
+    "geometry, profile, message",
+    [
+        (revolution_geometry(angular_segments=0), {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}, "Invalid recipe structure"),
+        (revolution_geometry(axis={"origin": [0, 0], "direction": [0, 0]}), {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}, "cannot be zero"),
+        (revolution_geometry(axis={"origin": [0.5, 0], "direction": [0, 1]}), {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}, "intersects"),
+        (revolution_geometry(clipping={"side": "left", "axis_column": 0}), {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}, "empty after clipping"),
+    ],
+)
+def test_v06_raster_revolution_rejects_invalid_axis_resolution_and_clip(geometry, profile, message):
+    with pytest.raises(object_recipe.RecipeError, match=message):
+        build_raster_operation(profile, raster_operation_part("revolution", **geometry))
+
+
+@pytest.mark.parametrize("operation", ["revolution", "torus"])
+def test_v06_rotational_operations_reject_empty_or_completely_clipped_profiles(operation):
+    empty_profile = {"type": "raster", "width": 2, "height": 1, "data": [0, 0]}
+    empty_geometry = torus_geometry() if operation == "torus" else revolution_geometry()
+    with pytest.raises(object_recipe.RecipeError, match="empty raster profile"):
+        build_raster_operation(empty_profile, raster_operation_part(operation, **empty_geometry))
+
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    if operation == "torus":
+        clipped_geometry = torus_geometry(axis_mode="clip_axis", clipping={"side": "left", "axis_column": 0})
+    else:
+        clipped_geometry = revolution_geometry(
+            axis={"origin": [0, 0], "direction": [0, 1]},
+            clipping={"side": "left", "axis_column": 0},
+        )
+    with pytest.raises(object_recipe.RecipeError, match="empty after clipping"):
+        build_raster_operation(profile, raster_operation_part(operation, **clipped_geometry))
+
+
+def test_v06_raster_torus_clip_axis_and_offset_axis():
+    profile = {"type": "raster", "width": 3, "height": 2, "data": [0, 1, 0, 1, 1, 1]}
+    clip_axis = raster_operation_part(
+        "torus",
+        **torus_geometry(axis_mode="clip_axis", clipping={"side": "right", "axis_column": 1}),
+    )
+    offset_axis = raster_operation_part("torus", **torus_geometry(axis_side="right", axis_offset=2.0))
+
+    clipped = build_raster_operation(profile, clip_axis)
+    offset = build_raster_operation(profile, offset_axis)
+
+    assert clipped.object_type == "RasterTorus"
+    assert_valid_rotational_mesh(clipped)
+    assert_valid_rotational_mesh(offset)
+
+
+def test_v06_raster_torus_offset_axis_can_be_placed_on_either_side():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    left = build_raster_operation(
+        profile,
+        raster_operation_part("torus", **torus_geometry(axis_side="left", axis_offset=1.0)),
+    )
+    right = build_raster_operation(
+        profile,
+        raster_operation_part("torus", **torus_geometry(axis_side="right", axis_offset=1.0)),
+    )
+
+    assert (min(vertex[0] for vertex in left.vertices), max(vertex[0] for vertex in left.vertices)) == pytest.approx((-4.0, 2.0))
+    assert (min(vertex[0] for vertex in right.vertices), max(vertex[0] for vertex in right.vertices)) == pytest.approx((0.0, 6.0))
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_v06_raster_torus_supports_left_and_right_clipping(side):
+    profile = {"type": "raster", "width": 4, "height": 2, "data": [0, 0, 1, 0, 1, 1, 0, 0]}
+    part = raster_operation_part(
+        "torus",
+        **torus_geometry(axis_mode="clip_axis", clipping={"side": side, "axis_column": 2}),
+    )
+
+    assert_valid_rotational_mesh(build_raster_operation(profile, part))
+
+
+def test_v06_raster_torus_resolution_determinism_and_no_evolution():
+    profile = {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}
+    low = raster_operation_part("torus", **torus_geometry(angular_segments=8))
+    high = raster_operation_part("torus", **torus_geometry(angular_segments=16))
+    evolved = raster_operation_part(
+        "torus",
+        **torus_geometry(evolution={"model": "original_profile", "interpolation": "linear"}),
+    )
+    low_mesh = build_raster_operation(profile, low)
+    high_mesh = build_raster_operation(profile, high)
+    repeated = build_raster_operation(profile, low)
+
+    assert len(high_mesh.faces) == 2 * len(low_mesh.faces)
+    assert low_mesh.vertices == repeated.vertices
+    assert low_mesh.faces == repeated.faces
+    assert low_mesh.edges == repeated.edges
+    assert_valid_rotational_mesh(low_mesh)
+    with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
+        object_recipe.validate_recipe(v06_recipe(profile, [evolved]))
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        torus_geometry(axis_offset=0),
+        torus_geometry(axis_mode="clip_axis"),
+        torus_geometry(axis_mode="offset_from_profile", axis_side="near", axis_offset=1),
+    ],
+)
+def test_v06_raster_torus_rejects_invalid_axis_parameters(geometry):
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
+        object_recipe.validate_recipe(v06_recipe(profile, [raster_operation_part("torus", **geometry)]))
+
+
+def test_v06_raster_torus_joins_primitive_recipe_assembly():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    torus = raster_operation_part("torus", part_id="torus", **torus_geometry())
+    torus["anchors"] = [{"name": "mount", "parent": "main", "local_position": [0, 0.5, 0]}]
+    block = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0, 0, 0],
+        "local_rotation": [90, 0, 0],
+    }])
+    value = v06_recipe(profile, [torus, block], [{
+        "id": "torus-on-base",
+        "part": "torus",
+        "anchor": "mount",
+        "target": {"part": "base", "anchor": "socket"},
+        "mode": "snap",
+    }])
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    vertices, faces, edges = object_recipe.combine_recipe_parts(parts)
+    figure = streamlit_app.build_plotly_figure(vertices, faces, edges, angles=(0, 0, 0))
+
+    assert [part.part_id for part in parts] == ["torus", "base"]
+    assert len(vertices) == sum(len(part.vertices) for part in parts)
+    assert len(faces) == sum(len(part.faces) for part in parts)
+    assert len(edges) == sum(len(part.edges) for part in parts)
+    assert all(0 <= index < len(vertices) for face in faces for index in face)
+    assert figure.data[0].type == "mesh3d"
+    assert len(figure.data[0].i) == len(faces)
+
+
+def test_v06_unicode_raster_revolution_snaps_to_block_and_reaches_plotly():
+    character = "\N{LATIN CAPITAL LETTER A}"
+    font = ImageFont.load_default()
+    left, top, right, bottom = font.getbbox(character)
+    raster_image = Image.new("1", (right - left, bottom - top), 0)
+    ImageDraw.Draw(raster_image).text((-left, -top), character, font=font, fill=1)
+    profile_data = {
+        "type": "raster",
+        "width": raster_image.width,
+        "height": raster_image.height,
+        "data": [
+            int(raster_image.getpixel((column, row)) != 0)
+            for row in range(raster_image.height)
+            for column in range(raster_image.width)
+        ],
+    }
+    profile = object_recipe.load_profile(profile_data)
+    occupied_cells = list(object_recipe.iter_occupied_cells(profile))
+    assert occupied_cells
+
+    revolution = raster_operation_part(
+        "revolution",
+        part_id="unicode_revolution",
+        construction_plane="xy",
+        angular_segments=12,
+        axis={"origin": [-1.0, 0.0], "direction": [0.0, 1.0]},
+    )
+    revolution["transform"] = {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0],
+    }
+    revolution["anchors"] = [{
+        "name": "mount",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [0.0, 0.0, 0.0],
+    }]
+    block = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [90.0, 0.0, 0.0],
+    }])
+    value = v06_recipe(profile_data, [revolution, block], [{
+        "id": "unicode-on-base",
+        "part": "unicode_revolution",
+        "anchor": "mount",
+        "target": {"part": "base", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [0.0, 0.0, 0.0],
+    }])
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    unicode_part = next(part for part in parts if part.part_id == "unicode_revolution")
+    vertices, faces, edges = object_recipe.combine_recipe_parts(parts)
+    figure = streamlit_app.build_plotly_figure(vertices, faces, edges, angles=(0, 0, 0))
+    mesh_trace = figure.data[0]
+
+    assert len(parts) == 2
+    assert unicode_part.object_type == "RasterRevolution"
+    assert_valid_rotational_mesh(unicode_part)
+    assert mesh_trace.type == "mesh3d"
+    assert len(mesh_trace.x) == len(vertices)
+    assert len(mesh_trace.i) == len(faces)
+    assert max(max(mesh_trace.i), max(mesh_trace.j), max(mesh_trace.k)) < len(vertices)
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_v06_unicode_raster_torus_clips_and_assembles_with_primitive(side):
+    character = "\N{LATIN CAPITAL LETTER A}"
+    font = ImageFont.load_default()
+    left, top, right, bottom = font.getbbox(character)
+    raster_image = Image.new("1", (right - left, bottom - top), 0)
+    ImageDraw.Draw(raster_image).text((-left, -top), character, font=font, fill=1)
+    profile_data = {
+        "type": "raster",
+        "width": raster_image.width,
+        "height": raster_image.height,
+        "data": [
+            int(raster_image.getpixel((column, row)) != 0)
+            for row in range(raster_image.height)
+            for column in range(raster_image.width)
+        ],
+    }
+    profile = object_recipe.load_profile(profile_data)
+    clip_column = profile.width // 2
+    clipped_cells = [
+        (column, row)
+        for column, row in object_recipe.iter_occupied_cells(profile)
+        if (side == "left" and column < clip_column)
+        or (side == "right" and column >= clip_column)
+    ]
+    assert clipped_cells
+
+    torus = raster_operation_part(
+        "torus",
+        part_id=f"glyph_torus_{side}",
+        **torus_geometry(
+            axis_mode="clip_axis",
+            clipping={"side": side, "axis_column": clip_column},
+            angular_segments=16,
+        ),
+    )
+    torus["anchors"] = [{
+        "name": "glyph_mount",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [0.0, 0.0, 0.0],
+    }]
+    block = phase2_cube("mount_block", anchors=[{
+        "name": "glyph_socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [90.0, 0.0, 0.0],
+    }])
+    value = v06_recipe(profile_data, [torus, block], [{
+        "id": f"glyph-torus-on-block-{side}",
+        "part": f"glyph_torus_{side}",
+        "anchor": "glyph_mount",
+        "target": {"part": "mount_block", "anchor": "glyph_socket"},
+        "mode": "snap",
+        "rotation_offset": [0.0, 0.0, 0.0],
+    }])
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    torus_part = next(part for part in parts if part.part_id == f"glyph_torus_{side}")
+    vertices, faces, edges = object_recipe.combine_recipe_parts(parts)
+
+    assert len(parts) == 2
+    assert torus_part.object_type == "RasterTorus"
+    assert_valid_rotational_mesh(torus_part)
+    assert len(vertices) == sum(len(part.vertices) for part in parts)
+    assert len(faces) == sum(len(part.faces) for part in parts)
+    assert len(edges) == sum(len(part.edges) for part in parts)
+    assert all(0 <= index < len(vertices) for face in faces for index in face)
