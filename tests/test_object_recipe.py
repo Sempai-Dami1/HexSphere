@@ -922,10 +922,12 @@ def test_v06_pyramid_raster_stack_smoke():
     print("PHASE 5B EXTRUSION SMOKE TEST READY")
 
 
-def stack_evolution_part(layer_count=3, evolution=None):
+def stack_evolution_part(layer_count=3, evolution=None, construction_plane=None):
     part = raster_stack_part()
     part["geometry"]["layer_count"] = layer_count
     part["geometry"]["depth"] = 2.0
+    if construction_plane is not None:
+        part["geometry"]["construction_plane"] = construction_plane
     if evolution is not None:
         part["geometry"]["evolution"] = {
             "model": "original_profile",
@@ -935,8 +937,8 @@ def stack_evolution_part(layer_count=3, evolution=None):
     return part
 
 
-def build_evolved_stack(profile, evolution=None, layer_count=3):
-    value = v06_recipe(profile, [stack_evolution_part(layer_count, evolution)])
+def build_evolved_stack(profile, evolution=None, layer_count=3, construction_plane=None):
+    value = v06_recipe(profile, [stack_evolution_part(layer_count, evolution, construction_plane)])
     return object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)[0]
 
 
@@ -957,6 +959,34 @@ def test_v06_evolution_absent_is_identity():
 
     assert without.vertices == with_empty_evolution.vertices
     assert without.faces == with_empty_evolution.faces
+
+
+@pytest.mark.parametrize(
+    "channel, start, end",
+    [
+        ("shift", [0.0, 0.0], [0.0, 0.0]),
+        ("rotation_degrees", 0.0, 0.0),
+        ("scale", [1.0, 1.0], [1.0, 1.0]),
+    ],
+)
+def test_v06_constant_evolution_channels_are_identity(channel, start, end):
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    baseline = build_evolved_stack(profile)
+    constant = build_evolved_stack(profile, {channel: {"start": start, "end": end}})
+
+    assert constant.vertices == baseline.vertices
+    assert constant.faces == baseline.faces
+    assert constant.edges == baseline.edges
+
+
+def test_v06_construction_plane_defaults_to_xy():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    implicit = build_evolved_stack(profile)
+    explicit = build_evolved_stack(profile, construction_plane="xy")
+
+    assert explicit.vertices == implicit.vertices
+    assert explicit.faces == implicit.faces
+    assert explicit.edges == implicit.edges
 
 
 def test_v06_evolution_shift_only_interpolates_from_original_profile():
@@ -1009,6 +1039,27 @@ def test_v06_evolution_combines_scale_rotation_then_shift():
     part = build_evolved_stack(profile, evolution)
 
     assert layer_xy_bounds(part, 1.0) == pytest.approx((0.5857864376, 3.4142135624, -0.9142135624, 1.9142135624))
+
+
+@pytest.mark.parametrize(
+    "evolution",
+    [
+        {
+            "shift": {"start": [0, 0], "end": [1, -1]},
+            "rotation_degrees": {"start": 0, "end": 45},
+        },
+        {
+            "rotation_degrees": {"start": 0, "end": 45},
+            "scale": {"start": [1, 1], "end": [1.5, 2]},
+        },
+    ],
+)
+def test_v06_pairwise_evolution_channels_generate_closed_solids(evolution):
+    profile = {"type": "raster", "width": 2, "height": 2, "data": [1, 1, 1, 0]}
+    part = build_evolved_stack(profile, evolution)
+
+    assert_closed_triangle_mesh(part)
+    assert all(math.isfinite(value) for vertex in part.vertices for value in vertex)
 
 
 def test_v06_evolution_supports_multiple_layer_interpolation_and_is_finite():
@@ -1090,6 +1141,247 @@ def test_v06_declarative_recipe_matches_raster_to_solid_concept():
     assert first.edges == second.edges
     assert all(math.isfinite(value) for vertex in first.vertices for value in vertex)
     assert_closed_triangle_mesh(first)
+
+
+@pytest.mark.parametrize(
+    "plane, expected_extents",
+    [
+        ("xy", (2.0, 1.0, 2.0)),
+        ("yz", (2.0, 2.0, 1.0)),
+        ("zx", (1.0, 2.0, 2.0)),
+    ],
+)
+def test_v06_raster_stack_supports_cyclic_construction_planes(plane, expected_extents):
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    part = build_evolved_stack(profile, layer_count=3, construction_plane=plane)
+    extents = tuple(
+        max(vertex[axis] for vertex in part.vertices) - min(vertex[axis] for vertex in part.vertices)
+        for axis in range(3)
+    )
+
+    assert extents == pytest.approx(expected_extents)
+    assert_closed_triangle_mesh(part)
+
+
+def test_v06_raster_stack_rejects_unsupported_construction_plane():
+    part = stack_evolution_part(construction_plane="xz")
+    value = v06_recipe({"type": "raster", "width": 1, "height": 1, "data": [1]}, [part])
+
+    with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
+        object_recipe.validate_recipe(value)
+
+
+@pytest.mark.parametrize(
+    "plane, u_axis, v_axis, stack_axis",
+    [("xy", 0, 1, 2), ("yz", 1, 2, 0), ("zx", 2, 0, 1)],
+)
+def test_v06_raster_stack_evolution_shift_uses_selected_plane_coordinates(plane, u_axis, v_axis, stack_axis):
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    part = build_evolved_stack(
+        profile,
+        {"shift": {"start": [0, 0], "end": [2, -1]}},
+        layer_count=2,
+        construction_plane=plane,
+    )
+    final_layer = [vertex for vertex in part.vertices if vertex[stack_axis] == pytest.approx(2.0)]
+
+    assert min(vertex[u_axis] for vertex in final_layer) == pytest.approx(2.0)
+    assert max(vertex[u_axis] for vertex in final_layer) == pytest.approx(3.0)
+    assert min(vertex[v_axis] for vertex in final_layer) == pytest.approx(-1.0)
+    assert max(vertex[v_axis] for vertex in final_layer) == pytest.approx(0.0)
+
+
+def test_v06_evolved_raster_stack_component_exposes_anchor_and_uses_snap():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    component = {
+        "parameters": {},
+        "parts": [stack_evolution_part(
+            layer_count=3,
+            evolution={
+                "shift": {"start": [0, 0], "end": [0.4, 0]},
+                "rotation_degrees": {"start": 0, "end": 30},
+                "scale": {"start": [1, 1], "end": [1.2, 1.2]},
+            },
+            construction_plane="yz",
+        )],
+        "connections": [],
+        "exposes": [{"name": "mount", "source": "stack.mount"}],
+    }
+    component["parts"][0]["anchors"] = [{
+        "name": "mount",
+        "parent": "main",
+        "local_position": [0.5, 0.5, 0.0],
+        "local_rotation": [0.0, 0.0, 0.0],
+    }]
+    base = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [90.0, 0.0, 0.0],
+    }])
+    value = v06_recipe(profile, [base])
+    value["object"]["components"] = {"evolved_glyph": component}
+    value["object"]["instances"] = [{
+        "id": "glyph",
+        "component": "evolved_glyph",
+        "connection": {
+            "anchor": "mount",
+            "target": {"part": "base", "anchor": "socket"},
+            "mode": "snap",
+            "rotation_offset": [0.0, 0.0, 0.0],
+        },
+    }]
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    generated = next(part for part in parts if part.part_id == "glyph.stack")
+    combined = object_recipe.combine_recipe_parts(parts)
+
+    assert len(parts) == 2
+    assert generated.object_type == "RasterStack"
+    assert_closed_triangle_mesh(generated)
+    assert len(combined[0]) == sum(len(part.vertices) for part in parts)
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+
+
+def test_v06_component_stack_requires_root_profile():
+    component = {
+        "parameters": {},
+        "parts": [stack_evolution_part()],
+        "connections": [],
+        "exposes": [],
+    }
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["components"] = {"stack_component": component}
+    value["object"]["instances"] = [{"id": "instance", "component": "stack_component"}]
+
+    with pytest.raises(object_recipe.RecipeError, match="object.profile"):
+        object_recipe.validate_recipe(value)
+
+
+def test_v06_cpp_raster_stack_concept_compatibility_fixture():
+    """Model the conceptual raster-stack workflow without C++ binary data."""
+    profile = {
+        "type": "raster",
+        "width": 6,
+        "height": 6,
+        "data": [
+            0, 0, 1, 1, 0, 0,
+            0, 1, 1, 1, 1, 0,
+            1, 1, 0, 0, 1, 1,
+            1, 1, 0, 0, 0, 1,
+            0, 1, 1, 1, 1, 0,
+            0, 0, 1, 1, 1, 0,
+        ],
+    }
+    evolution = {
+        "shift": {"start": [0.0, 0.0], "end": [0.3, 0.0]},
+        "rotation_degrees": {"start": 0.0, "end": 6.0},
+        "scale": {"start": [1.0, 1.0], "end": [1.15, 1.15]},
+    }
+    first = build_evolved_stack(profile, evolution, layer_count=4, construction_plane="zx")
+    second = build_evolved_stack(profile, evolution, layer_count=4, construction_plane="zx")
+    raster_profile = object_recipe.load_profile(profile)
+    stack_axis = 1
+    layer_values = sorted({round(vertex[stack_axis], 8) for vertex in first.vertices})
+    bounds_by_layer = [
+        tuple(
+            (
+                min(vertex[axis] for vertex in first.vertices if vertex[stack_axis] == pytest.approx(layer)),
+                max(vertex[axis] for vertex in first.vertices if vertex[stack_axis] == pytest.approx(layer)),
+            )
+            for axis in (0, 2)
+        )
+        for layer in layer_values
+    ]
+    first_layer_vertices = [vertex for vertex in first.vertices if vertex[stack_axis] == pytest.approx(layer_values[0])]
+    occupied = {
+        (column, raster_profile.height - row - 1)
+        for column, row in object_recipe.iter_occupied_cells(raster_profile)
+    }
+    expected_first_layer = {
+        (float(grid_y), float(grid_x))
+        for cell_x, cell_y in occupied
+        for grid_x, grid_y in (
+            (cell_x, cell_y),
+            (cell_x + 1, cell_y),
+            (cell_x + 1, cell_y + 1),
+            (cell_x, cell_y + 1),
+        )
+    }
+    actual_first_layer = {
+        (round(vertex[0], 8), round(vertex[2], 8))
+        for vertex in first_layer_vertices
+    }
+
+    assert len(layer_values) == 4
+    assert first.vertices == second.vertices
+    assert first.faces == second.faces
+    assert first.edges == second.edges
+    assert bounds_by_layer[0] != bounds_by_layer[-1]
+    assert all(math.isfinite(value) for vertex in first.vertices for value in vertex)
+    assert all(0.0 <= vertex[0] <= 6.0 and 0.0 <= vertex[2] <= 6.0 for vertex in first_layer_vertices)
+    assert actual_first_layer == expected_first_layer
+    assert_closed_triangle_mesh(first)
+
+
+def test_v06_unicode_evolved_stack_snaps_to_block_and_reaches_plotly():
+    character = "\N{LATIN CAPITAL LETTER A}"
+    font = ImageFont.load_default()
+    left, top, right, bottom = font.getbbox(character)
+    raster_image = Image.new("1", (right - left, bottom - top), 0)
+    ImageDraw.Draw(raster_image).text((-left, -top), character, font=font, fill=1)
+    profile = {
+        "type": "raster",
+        "width": raster_image.width,
+        "height": raster_image.height,
+        "data": [
+            int(raster_image.getpixel((column, row)) != 0)
+            for row in range(raster_image.height)
+            for column in range(raster_image.width)
+        ],
+    }
+    stack = stack_evolution_part(
+        layer_count=4,
+        evolution={
+            "shift": {"start": [0, 0], "end": [0.3, 0]},
+            "rotation_degrees": {"start": 0, "end": 6},
+            "scale": {"start": [1, 1], "end": [1.15, 1.15]},
+        },
+        construction_plane="yz",
+    )
+    stack["anchors"] = [{
+        "name": "glyph_mount",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [0.0, 0.0, 0.0],
+    }]
+    base = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [90.0, 0.0, 0.0],
+    }])
+    value = v06_recipe(profile, [stack, base], [{
+        "id": "unicode-stack-snap",
+        "part": "stack",
+        "anchor": "glyph_mount",
+        "target": {"part": "base", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [0.0, 0.0, 0.0],
+    }])
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    generated = next(part for part in parts if part.part_id == "stack")
+    vertices, faces, edges = object_recipe.combine_recipe_parts(parts)
+    figure = streamlit_app.build_plotly_figure(vertices, faces, edges, angles=(0, 0, 0))
+
+    assert len(parts) == 2
+    assert_valid_rotational_mesh(generated)
+    assert all(math.isfinite(value) for vertex in vertices for value in vertex)
+    assert figure.data[0].type == "mesh3d"
+    assert len(figure.data[0].i) == len(faces)
+    assert max(max(figure.data[0].i), max(figure.data[0].j), max(figure.data[0].k)) < len(vertices)
 
 
 @pytest.mark.parametrize(

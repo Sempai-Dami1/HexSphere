@@ -107,9 +107,13 @@
       },
       "additionalProperties": false
     },
+    "stackConstructionPlane": {
+      "enum": ["xy", "yz", "zx"],
+      "description": "Right-handed cyclic basis for the raster plane and stack axis: XY=(X,Y), stack +Z; YZ=(Y,Z), stack +X; ZX=(Z,X), stack +Y. Omission means XY."
+    },
     "rasterStackGeometry": {
       "type": "object",
-      "description": "Creates a capped extrusion in local XY, stacked along +Z. Raster columns map to +X, rows map upward from the lower-left profile origin, and cell_size scales those axes. Optional evolution transforms each layer relative to the original profile. The ordinary part transform is applied after construction.",
+      "description": "Creates a capped extrusion in the selected right-handed construction plane. Raster X/Y map to the plane's ordered U/V basis; layers stack along its positive normal. Omitted construction_plane means XY. Optional evolution transforms each layer relative to the original profile. The ordinary part transform is applied after construction.",
       "required": ["type", "profile", "layer_count", "depth"],
       "properties": {
         "type": {"const": "raster_stack"},
@@ -117,6 +121,7 @@
         "layer_count": {"$ref": "#/$defs/stackLayerCount"},
         "depth": {"$ref": "#/$defs/stackDepth"},
         "cell_size": {"$ref": "#/$defs/cellSize"},
+        "construction_plane": {"$ref": "#/$defs/stackConstructionPlane"},
         "evolution": {"$ref": "#/$defs/evolution"}
       },
       "additionalProperties": false
@@ -304,6 +309,12 @@
         {"$ref": "#/$defs/torusPart"}
       ]
     },
+    "componentPart": {
+      "oneOf": [
+        {"$ref": "#/$defs/part"},
+        {"$ref": "#/$defs/stackPart"}
+      ]
+    },
     "target": {
       "type": "object",
       "required": ["part", "anchor"],
@@ -333,7 +344,7 @@
       "required": ["parameters", "parts", "exposes"],
       "properties": {
         "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
-        "parts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/part"}},
+        "parts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/componentPart"}},
         "connections": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/connection"}},
         "instances": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/instance"}},
         "exposes": {"type": "array", "maxItems": 64, "items": {"type": "object", "required": ["name", "source"], "properties": {"name": {"type": "string", "maxLength": 80}, "source": {"type": "string", "maxLength": 512}}, "additionalProperties": false}}

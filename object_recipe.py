@@ -270,6 +270,15 @@ def _build_raster_stack_mesh(
     evolution = geometry.get("evolution", {})
     if not isinstance(evolution, Mapping):
         raise RecipeError("Raster stack evolution must be an object.")
+    plane_bases = {
+        "xy": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        "yz": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+        "zx": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    }
+    plane_basis = plane_bases.get(geometry.get("construction_plane", "xy"))
+    if plane_basis is None:
+        raise RecipeError("Unsupported raster stack construction plane.")
+    basis_u, basis_v, basis_normal = plane_basis
 
     occupied = {
         (column, profile.height - row - 1)
@@ -361,10 +370,11 @@ def _build_raster_stack_mesh(
             grid_x, grid_y = key[:2]
             relative_x = (grid_x * cell_width - canvas_center_x) * scale_x
             relative_y = (grid_y * cell_height - canvas_center_y) * scale_y
-            point = (
-                canvas_center_x + cosine * relative_x - sine * relative_y + shift_x,
-                canvas_center_y + sine * relative_x + cosine * relative_y + shift_y,
-                z,
+            plane_x = canvas_center_x + cosine * relative_x - sine * relative_y + shift_x
+            plane_y = canvas_center_y + sine * relative_x + cosine * relative_y + shift_y
+            point = tuple(
+                plane_x * basis_u[axis] + plane_y * basis_v[axis] + z * basis_normal[axis]
+                for axis in range(3)
             )
             if any(not math.isfinite(value) or abs(value) > MAX_ABS_NUMBER for value in point):
                 raise RecipeError("Raster stack generated a coordinate outside the allowed range.")
@@ -748,9 +758,15 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
 
     if version in {RECIPE_VERSION_V05, RECIPE_VERSION_V06} and "profile" in recipe["object"]:
         validate_profile(recipe["object"]["profile"])
-    if version == RECIPE_VERSION_V06 and any("geometry" in part for part in recipe["object"]["parts"]):
+    has_root_generated_part = any("geometry" in part for part in recipe["object"]["parts"])
+    has_component_stack = any(
+        part.get("geometry", {}).get("type") == "raster_stack"
+        for component in recipe["object"].get("components", {}).values()
+        for part in component.get("parts", [])
+    )
+    if version == RECIPE_VERSION_V06 and (has_root_generated_part or has_component_stack):
         if "profile" not in recipe["object"]:
-            raise RecipeError("A raster stack part requires object.profile.")
+            raise RecipeError("Generated raster geometry requires object.profile.")
 
     parts = recipe["object"]["parts"]
     part_ids = [part["id"] for part in parts]
@@ -1191,12 +1207,15 @@ def _expand_v03_component(
     parts = []
     for part in component.get("parts", []):
         part_id = f"{instance_id}.{part['id']}"
-        parameters = {name: _resolve_v03_value(value, scopes, {}, f"{part_id}.parameters.{name}") for name, value in part["parameters"].items()}
         copied = dict(part)
         copied["id"] = part_id
-        copied["parameters"] = parameters
         copied["transform"] = _compose_v03_transforms(instance_transform, _v03_transform(part.get("transform", {}), scopes, {}, part_id), matrix_mode)
         copied["anchors"] = [_prefix_anchor(anchor, scopes, {}, f"{part_id}.anchors[{index}]") for index, anchor in enumerate(part.get("anchors", []))]
+        if "geometry" not in part:
+            copied["parameters"] = {
+                name: _resolve_v03_value(value, scopes, {}, f"{part_id}.parameters.{name}")
+                for name, value in part["parameters"].items()
+            }
         parts.append(copied)
     connections = []
     for connection in component.get("connections", []):
@@ -1333,6 +1352,15 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
         flat_connections.append(copied)
     if len(flat_parts) > MAX_V03_PARTS:
         raise RecipeError("Expanded recipe exceeds the Phase 3 part limit.")
+    for part in flat_parts:
+        if "geometry" not in part or "_generated_mesh" in part:
+            continue
+        if part["geometry"].get("type") != "raster_stack":
+            raise RecipeError("Only raster_stack geometry is supported inside components.")
+        vertices, faces, edges = _build_raster_stack_mesh(obj["profile"], part["geometry"])
+        part["type"] = "RasterStack"
+        part["parameters"] = {}
+        part["_generated_mesh"] = (vertices, faces, edges)
     connected_ids = {connection["part"] for connection in flat_connections}
     for part in flat_parts:
         if part["id"] in connected_ids:
