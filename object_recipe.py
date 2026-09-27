@@ -7,7 +7,7 @@ import math
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 from jsonschema import Draft202012Validator
 
@@ -16,10 +16,12 @@ RECIPE_VERSION = "0.1"
 RECIPE_VERSION_V02 = "0.2"
 RECIPE_VERSION_V03 = "0.3"
 RECIPE_VERSION_V04 = "0.4"
+RECIPE_VERSION_V05 = "0.5"
 SCHEMA_PATH = Path(__file__).with_name("object_recipe_schema.json")
 SCHEMA_PATH_V02 = Path(__file__).with_name("object_recipe_schema_v02.json")
 SCHEMA_PATH_V03 = Path(__file__).with_name("object_recipe_schema_v03.json")
 SCHEMA_PATH_V04 = Path(__file__).with_name("object_recipe_schema_v04.json")
+SCHEMA_PATH_V05 = Path(__file__).with_name("object_recipe_schema_v05.json")
 MAX_RECIPE_BYTES = 1_000_000
 MAX_PARTS = 64
 MAX_NESTING_DEPTH = 4
@@ -44,6 +46,38 @@ class RecipePartMesh:
     edges: list[tuple[int, int]]
 
 
+@dataclass(frozen=True)
+class RasterProfile:
+    """Validated raster: columns increase along X, top-down rows map to +Y."""
+
+    width: int
+    height: int
+    data: tuple[int, ...]
+
+    def is_occupied(self, column: int, row: int) -> bool:
+        if isinstance(column, bool) or not isinstance(column, int):
+            raise TypeError("Profile column must be an integer.")
+        if isinstance(row, bool) or not isinstance(row, int):
+            raise TypeError("Profile row must be an integer.")
+        if not 0 <= column < self.width or not 0 <= row < self.height:
+            raise IndexError("Profile cell is outside the raster bounds.")
+        return self.data[row * self.width + column] == 1
+
+    def iter_occupied_cells(self) -> Iterator[tuple[int, int]]:
+        for row in range(self.height):
+            for column in range(self.width):
+                if self.is_occupied(column, row):
+                    yield column, row
+
+    def to_coordinates(self, column: int, row: int) -> tuple[float, float]:
+        self.is_occupied(column, row)
+        return column + 0.5, self.height - row - 0.5
+
+    @property
+    def bounds(self) -> tuple[float, float, float, float]:
+        return 0.0, 0.0, float(self.width), float(self.height)
+
+
 def _load_schema(path: Path = SCHEMA_PATH) -> dict[str, Any]:
     with path.open(encoding="utf-8") as schema_file:
         return json.load(schema_file)
@@ -53,17 +87,78 @@ RECIPE_SCHEMA = _load_schema()
 RECIPE_SCHEMA_V02 = _load_schema(SCHEMA_PATH_V02)
 RECIPE_SCHEMA_V03 = _load_schema(SCHEMA_PATH_V03)
 RECIPE_SCHEMA_V04 = _load_schema(SCHEMA_PATH_V04)
+RECIPE_SCHEMA_V05 = _load_schema(SCHEMA_PATH_V05)
+PROFILE_SCHEMA = RECIPE_SCHEMA_V05["$defs"]["profile"]
+MAX_PROFILE_DIMENSION = RECIPE_SCHEMA_V05["$defs"]["profileDimension"]["maximum"]
 _RECIPE_VALIDATORS = {
     RECIPE_VERSION: Draft202012Validator(RECIPE_SCHEMA),
     RECIPE_VERSION_V02: Draft202012Validator(RECIPE_SCHEMA_V02),
     RECIPE_VERSION_V03: Draft202012Validator(RECIPE_SCHEMA_V03),
     RECIPE_VERSION_V04: Draft202012Validator(RECIPE_SCHEMA_V04),
+    RECIPE_VERSION_V05: Draft202012Validator(RECIPE_SCHEMA_V05),
 }
+_PROFILE_VALIDATOR = Draft202012Validator({
+    "$schema": RECIPE_SCHEMA_V05["$schema"],
+    "$defs": {
+        "profile": PROFILE_SCHEMA,
+        "profileDimension": RECIPE_SCHEMA_V05["$defs"]["profileDimension"],
+    },
+    "$ref": "#/$defs/profile",
+})
 
 
 def _error_path(error: Any) -> str:
     path = ".".join(str(item) for item in error.absolute_path)
     return path or "recipe"
+
+
+def validate_profile(profile: Mapping[str, Any] | Any) -> dict[str, Any]:
+    """Validate and detach a declarative binary raster profile."""
+    if not isinstance(profile, Mapping):
+        raise RecipeError("Profile must be a JSON object.")
+    try:
+        encoded = json.dumps(profile, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise RecipeError("Profile must contain JSON-compatible finite values.") from exc
+    if len(encoded.encode("utf-8")) > MAX_RECIPE_BYTES:
+        raise RecipeError("Profile exceeds the 1 MB size limit.")
+
+    errors = sorted(_PROFILE_VALIDATOR.iter_errors(profile), key=lambda item: list(item.absolute_path))
+    if errors:
+        error = errors[0]
+        raise RecipeError(f"Invalid profile structure at {_error_path(error)}: {error.message}")
+    if len(profile["data"]) != profile["width"] * profile["height"]:
+        raise RecipeError("Invalid profile data length: expected width * height values.")
+    return deepcopy(dict(profile))
+
+
+def load_profile(source: str | bytes | Mapping[str, Any]) -> RasterProfile:
+    """Parse and validate a profile, returning an immutable internal raster."""
+    if isinstance(source, Mapping):
+        profile = source
+    else:
+        try:
+            profile = json.loads(source)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise RecipeError("Profile is not valid JSON.") from exc
+    checked = validate_profile(profile)
+    return RasterProfile(checked["width"], checked["height"], tuple(checked["data"]))
+
+
+def profile_dimensions(profile: RasterProfile) -> tuple[int, int]:
+    return profile.width, profile.height
+
+
+def iter_occupied_cells(profile: RasterProfile) -> Iterator[tuple[int, int]]:
+    return profile.iter_occupied_cells()
+
+
+def profile_to_coordinates(profile: RasterProfile, column: int, row: int) -> tuple[float, float]:
+    return profile.to_coordinates(column, row)
+
+
+def profile_bounds(profile: RasterProfile) -> tuple[float, float, float, float]:
+    return profile.bounds
 
 
 def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
@@ -86,6 +181,9 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
         error = errors[0]
         raise RecipeError(f"Invalid recipe structure at {_error_path(error)}: {error.message}")
 
+    if version == RECIPE_VERSION_V05 and "profile" in recipe["object"]:
+        validate_profile(recipe["object"]["profile"])
+
     parts = recipe["object"]["parts"]
     part_ids = [part["id"] for part in parts]
     if len(part_ids) != len(set(part_ids)):
@@ -94,7 +192,7 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
         _validate_v02_relationships(recipe)
     if version == RECIPE_VERSION_V03:
         _validate_v03_relationships(recipe)
-    if version == RECIPE_VERSION_V04:
+    if version in {RECIPE_VERSION_V04, RECIPE_VERSION_V05}:
         _validate_v03_relationships(recipe)
     return deepcopy(dict(recipe))
 
@@ -584,7 +682,7 @@ def _radial_position(center: list[float], radius: float, angle: float) -> list[f
 
 def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
     obj = recipe["object"]
-    matrix_mode = recipe.get("version") == RECIPE_VERSION_V04
+    matrix_mode = recipe.get("version") in {RECIPE_VERSION_V04, RECIPE_VERSION_V05}
     top_parameters = _resolve_v03_mapping(obj.get("parameters", {}), {"root": obj.get("parameters", {})}, "object.parameters")
     flat_parts = []
     flat_connections = []
@@ -971,7 +1069,7 @@ def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
 def build_recipe_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
     """Generate each named part using only an existing registry generator."""
     checked_recipe = validate_recipe(recipe)
-    if checked_recipe["version"] == RECIPE_VERSION_V04:
+    if checked_recipe["version"] in {RECIPE_VERSION_V04, RECIPE_VERSION_V05}:
         return _build_v04_parts(checked_recipe, registry)
     if checked_recipe["version"] == RECIPE_VERSION_V03:
         return _build_v02_parts(_flatten_v03_recipe(checked_recipe, registry), registry)

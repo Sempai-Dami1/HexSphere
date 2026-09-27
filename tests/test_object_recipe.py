@@ -563,3 +563,95 @@ def test_v04_position_mode_remains_translation_only():
     for v04_part, v03_part in zip(v04_parts, v03_parts):
         for actual, expected in zip(v04_part.vertices, v03_part.vertices):
             assert actual == pytest.approx(expected, abs=1e-9)
+
+
+def test_raster_profile_dimensions_iteration_coordinates_and_bounds():
+    profile = object_recipe.load_profile({
+        "type": "raster",
+        "width": 4,
+        "height": 3,
+        "data": [0, 1, 0, 0, 1, 1, 1, 0, 0, 1, 0, 0],
+    })
+
+    assert object_recipe.profile_dimensions(profile) == (4, 3)
+    assert sum(1 for _ in object_recipe.iter_occupied_cells(profile)) == 5
+    assert list(object_recipe.iter_occupied_cells(profile)) == [
+        (1, 0), (0, 1), (1, 1), (2, 1), (1, 2),
+    ]
+    assert profile.is_occupied(1, 0)
+    assert object_recipe.profile_to_coordinates(profile, 1, 0) == (1.5, 2.5)
+    assert object_recipe.profile_bounds(profile) == (0.0, 0.0, 4.0, 3.0)
+    with pytest.raises(TypeError, match="column must be an integer"):
+        object_recipe.profile_to_coordinates(profile, 1.0, 0)
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        ({"type": "raster", "height": 1, "data": [1]}, "width"),
+        ({"type": "raster", "width": 1, "data": [1]}, "height"),
+        ({"type": "raster", "width": 2, "height": 1, "data": [1]}, "data length"),
+        ({"type": "raster", "width": 1, "height": 1, "data": [2]}, "Invalid profile structure"),
+        ({"type": "vector", "width": 1, "height": 1, "data": [1]}, "Invalid profile structure"),
+        ({"type": "raster", "width": 0, "height": 1, "data": []}, "Invalid profile structure"),
+        ({"type": "raster", "width": 1, "height": 1.5, "data": [1]}, "Invalid profile structure"),
+        ({"type": "raster", "width": 129, "height": 1, "data": [1]}, "Invalid profile structure"),
+        ({"type": "raster", "width": 1, "height": 1, "data": [1], "extra": True}, "Invalid profile structure"),
+        ({"type": "raster", "width": float("nan"), "height": 1, "data": [1]}, "finite values"),
+    ],
+)
+def test_invalid_raster_profiles_are_rejected(value, message):
+    with pytest.raises(object_recipe.RecipeError, match=message):
+        object_recipe.load_profile(value)
+
+
+def test_raster_profile_supports_empty_single_cell_and_non_square_data():
+    empty = object_recipe.load_profile({"type": "raster", "width": 2, "height": 3, "data": [0] * 6})
+    single = object_recipe.load_profile({"type": "raster", "width": 1, "height": 1, "data": [1]})
+    assert list(empty.iter_occupied_cells()) == []
+    assert empty.bounds == (0.0, 0.0, 2.0, 3.0)
+    assert list(single.iter_occupied_cells()) == [(0, 0)]
+
+
+def test_v05_profile_validates_without_bypassing_existing_part_assembly():
+    value = v04_recipe([cube_part()], [])
+    value["version"] = "0.5"
+    value["object"]["profile"] = {
+        "type": "raster",
+        "width": 2,
+        "height": 3,
+        "data": [0, 1, 1, 1, 0, 1],
+    }
+
+    checked = object_recipe.load_recipe(value)
+    built = object_recipe.build_recipe_parts(checked, streamlit_app.OBJECT_REGISTRY)
+    parameters = object_recipe.resolve_part_parameters(
+        checked, checked["object"]["parts"][0], streamlit_app.OBJECT_REGISTRY
+    )
+    expected_vertices, expected_faces, expected_edges = streamlit_app.OBJECT_REGISTRY["SimpleBlock"]["generator"](parameters)
+
+    assert checked["object"]["profile"] == value["object"]["profile"]
+    assert len(built) == 1
+    assert built[0].object_type == "SimpleBlock"
+    assert built[0].vertices == [object_recipe._transform_vertex(vertex, checked["object"]["parts"][0]["transform"]) for vertex in expected_vertices]
+    assert built[0].faces == [tuple(face) for face in expected_faces]
+    assert built[0].edges == [tuple(edge) for edge in expected_edges]
+
+
+def test_v01_through_v04_geometry_generation_remains_unchanged():
+    recipes = [
+        recipe([cube_part()]),
+        v02_recipe([phase2_cube("base")]),
+        v03_recipe([phase2_cube("base")]),
+        v04_recipe([cube_part()], []),
+    ]
+    generated = [
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)[0]
+        for value in recipes
+    ]
+    reference = generated[0]
+
+    for part in generated[1:]:
+        assert part.vertices == reference.vertices
+        assert part.faces == reference.faces
+        assert part.edges == reference.edges
