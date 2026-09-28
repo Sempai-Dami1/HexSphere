@@ -2934,6 +2934,677 @@ def test_v06_raster_torus_joins_primitive_recipe_assembly():
     assert len(figure.data[0].i) == len(faces)
 
 
+# Phase 5F end-to-end generated geometry integration.
+def test_v06_unicode_stack_component_snap_end_to_end():
+    unicode_profile = phase5d_unicode_profile()
+    unrelated_root_profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    root_parameters = {
+        "depth": 2.4,
+        "cell": 0.2,
+        "shift_x": 0.18,
+        "shift_y": -0.08,
+        "turn": 16.0,
+        "scale_x": 1.15,
+        "scale_y": 0.85,
+        "origin_x": 1.25,
+        "origin_y": -0.75,
+        "origin_z": 2.5,
+    }
+    x_component = math.sqrt(0.5)
+    plane = explicit_plane(
+        origin=(root_parameters["origin_x"], root_parameters["origin_y"], root_parameters["origin_z"]),
+        x_axis=(x_component, 0.0, x_component),
+        y_axis=(0.0, 1.0, 0.0),
+    )
+    operation_geometry = {
+        "type": "raster_stack",
+        "profile": "glyph",
+        "layer_count": 4,
+        "depth": {"$ref": "instance.parameters.depth"},
+        "cell_size": [
+            {"$ref": "instance.parameters.cell"},
+            {"$ref": "instance.parameters.cell"},
+        ],
+        "plane": {
+            "origin": [
+                {"$ref": "instance.parameters.origin_x"},
+                {"$ref": "instance.parameters.origin_y"},
+                {"$ref": "instance.parameters.origin_z"},
+            ],
+            "x_axis": list(plane["x_axis"]),
+            "y_axis": list(plane["y_axis"]),
+        },
+        "evolution": {
+            "model": "original_profile",
+            "interpolation": "linear",
+            "shift": {
+                "start": [0.0, 0.0],
+                "end": [
+                    {"$ref": "instance.parameters.shift_x"},
+                    {"$ref": "instance.parameters.shift_y"},
+                ],
+            },
+            "rotation_degrees": {"start": 0.0, "end": {"$ref": "instance.parameters.turn"}},
+            "scale": {
+                "start": [1.0, 1.0],
+                "end": [
+                    {"$ref": "instance.parameters.scale_x"},
+                    {"$ref": "instance.parameters.scale_y"},
+                ],
+            },
+        },
+    }
+    literal_geometry = copy.deepcopy(operation_geometry)
+    literal_geometry.update({
+        "depth": root_parameters["depth"],
+        "cell_size": [root_parameters["cell"], root_parameters["cell"]],
+        "plane": plane,
+        "evolution": {
+            "model": "original_profile",
+            "interpolation": "linear",
+            "shift": {"start": [0.0, 0.0], "end": [root_parameters["shift_x"], root_parameters["shift_y"]]},
+            "rotation_degrees": {"start": 0.0, "end": root_parameters["turn"]},
+            "scale": {"start": [1.0, 1.0], "end": [root_parameters["scale_x"], root_parameters["scale_y"]]},
+        },
+    })
+    local_vertices, _, _ = object_recipe._build_raster_operation_mesh(unicode_profile, literal_geometry)
+    source_anchor_rotation = [17.0, -9.0, 12.0]
+    core_component = {
+        "parameters": {},
+        "parts": [{
+            "id": "body",
+            "geometry": operation_geometry,
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": list(local_vertices[0]),
+                "local_rotation": source_anchor_rotation,
+            }],
+        }],
+        "exposes": [{"name": "mount", "source": "body.mount"}],
+    }
+    assembly_component = {
+        "parameters": dict(root_parameters),
+        "profiles": {"glyph": unicode_profile},
+        "parts": [],
+        "instances": [{
+            "id": "inner",
+            "component": "GlyphCore",
+            "parameters": {name: {"$ref": f"component.parameters.{name}"} for name in root_parameters},
+            "transform": {"rotation": [5.0, 13.0, -7.0], "scale": [1.1, 0.9, 1.2]},
+        }],
+        "exposes": [{"name": "mount", "source": "inner.mount"}],
+    }
+    base = phase2_cube(
+        "base",
+        size=3.0,
+        transform={
+            "position": [2.0, -1.0, 3.0],
+            "rotation": [11.0, 17.0, -8.0],
+            "scale": [1.0, 1.0, 1.0],
+        },
+        anchors=[{
+            "name": "socket",
+            "parent": "main",
+            "local_position": [0.5, 0.75, -0.25],
+            "local_rotation": [9.0, -13.0, 7.0],
+        }],
+    )
+    connection = {
+        "id": "glyph-to-base",
+        "part": "glyph.mount",
+        "anchor": "mount",
+        "target": {"part": "base", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [8.0, -6.0, 14.0],
+        "offset": [0.2, -0.1, 0.3],
+        "offset_space": "target",
+    }
+    value = v06_recipe(None, [base])
+    value["object"].pop("profile")
+    value["object"]["profiles"] = {"glyph": unrelated_root_profile}
+    value["object"]["components"] = {"GlyphCore": core_component, "GlyphAssembly": assembly_component}
+    value["object"]["instances"] = [{
+        "id": "glyph",
+        "component": "GlyphAssembly",
+        "parameters": root_parameters,
+        "transform": {"rotation": [13.0, 21.0, -8.0], "scale": [1.0, 1.0, 1.0]},
+    }]
+    value["object"]["connections"] = [connection]
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    repeated = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    built_by_id = {part.part_id: part for part in parts}
+    stack = built_by_id["glyph.inner.body"]
+    assert [(part.vertices, part.faces, part.edges) for part in parts] == [
+        (part.vertices, part.faces, part.edges) for part in repeated
+    ]
+    assert stack.object_type == "RasterStack"
+    assert stack.vertices and stack.faces and stack.edges
+    assert all(math.isfinite(value) for vertex in stack.vertices for value in vertex)
+    assert all(0 <= index < len(stack.vertices) for face in stack.faces for index in face)
+
+    normal = (-x_component, 0.0, x_component)
+    vertices_per_layer = len(local_vertices) // operation_geometry["layer_count"]
+    local_depth_delta = tuple(
+        local_vertices[(operation_geometry["layer_count"] - 1) * vertices_per_layer][axis]
+        - local_vertices[0][axis]
+        for axis in range(3)
+    )
+    assert sum(local_depth_delta[axis] * normal[axis] for axis in range(3)) == pytest.approx(root_parameters["depth"])
+    assert local_vertices != object_recipe._build_raster_operation_mesh(
+        unicode_profile,
+        {**literal_geometry, "plane": {**plane, "origin": [0.0, 0.0, 0.0]}},
+    )[0]
+
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    flat_stack = next(part for part in flattened["object"]["parts"] if part["id"] == "glyph.inner.body")
+    local_mesh = flat_stack["_generated_mesh"][0]
+    source_anchor = object_recipe._resolve_v04_local_anchors(flat_stack, local_mesh)["mount"]
+    source_rotation = flat_stack["transform"]["_rotation_matrix"]
+    source_scale = flat_stack["transform"]["scale"]
+    base_vertices, _, _ = streamlit_app.OBJECT_REGISTRY["SimpleBlock"]["generator"](base["parameters"])
+    target_anchor = object_recipe._resolve_v04_local_anchors(base, base_vertices)["socket"]
+    target_world = object_recipe._v04_anchor_world(target_anchor, {
+        "position": base["transform"]["position"],
+        "rotation": object_recipe._rotation_matrix(base["transform"]["rotation"]),
+        "scale": base["transform"]["scale"],
+    })
+    offset_world = object_recipe._matrix_vector(target_world.rotation, connection["offset"])
+    expected_anchor_position = tuple(
+        target_world.position[axis] + offset_world[axis]
+        for axis in range(3)
+    )
+    rotation_offset = object_recipe._rotation_matrix(connection["rotation_offset"])
+    target_source_frame = object_recipe._matrix_multiply(target_world.rotation, rotation_offset)
+    source_current_frame = object_recipe._matrix_multiply(source_rotation, source_anchor.rotation)
+    snapped_rotation = object_recipe._matrix_multiply(
+        object_recipe._matrix_multiply(target_source_frame, object_recipe._matrix_transpose(source_current_frame)),
+        source_rotation,
+    )
+    aligned_anchor_frame = object_recipe._matrix_multiply(snapped_rotation, source_anchor.rotation)
+    for actual_row, expected_row in zip(aligned_anchor_frame, target_source_frame):
+        assert actual_row == pytest.approx(expected_row, abs=1e-9)
+    assert stack.vertices[0] == pytest.approx(expected_anchor_position)
+
+    sample_index = next(index for index, vertex in enumerate(local_mesh[1:], start=1) if vertex != local_mesh[0])
+    local_edge = tuple(local_mesh[sample_index][axis] - local_mesh[0][axis] for axis in range(3))
+    expected_world_edge = object_recipe._matrix_vector(
+        snapped_rotation,
+        tuple(local_edge[axis] * source_scale[axis] for axis in range(3)),
+    )
+    actual_world_edge = tuple(stack.vertices[sample_index][axis] - stack.vertices[0][axis] for axis in range(3))
+    assert actual_world_edge == pytest.approx(expected_world_edge, abs=1e-9)
+
+    combined = object_recipe.combine_recipe_parts(parts)
+    assert combined[0] and combined[1] and combined[2]
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+    assert all(0 <= index < len(combined[0]) for edge in combined[2] for index in edge)
+    figure = streamlit_app.build_plotly_figure(*combined, angles=(0, 0, 0))
+    trace = figure.data[0]
+    assert trace.type == "mesh3d"
+    assert len(trace.x) == len(combined[0])
+    assert len(trace.i) == len(combined[1])
+
+
+def test_v06_unicode_revolution_component_snap_end_to_end():
+    profile_data = phase5d_unicode_profile()
+    profile = object_recipe.load_profile(profile_data)
+    clip_column = profile.width // 2
+    component_parameters = {"segments": 16, "cell": 0.18, "clip_column": clip_column}
+    plane = explicit_plane(
+        origin=(0.3, -0.2, 0.5),
+        x_axis=(math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+        y_axis=(0.0, 1.0, 0.0),
+    )
+    revolution_parts = []
+    expected_local_meshes = {}
+    for side in ("left", "right"):
+        axis_x = clip_column * component_parameters["cell"]
+        literal_geometry = {
+            "type": "raster_revolution",
+            "profile": "glyph",
+            "plane": plane,
+            "angular_segments": component_parameters["segments"],
+            "cell_size": [component_parameters["cell"], component_parameters["cell"]],
+            "axis": {"origin": [axis_x, 0.0], "direction": [0.0, 1.0]},
+            "clipping": {"side": side, "axis_column": clip_column},
+        }
+        expected_local_meshes[side] = object_recipe._build_raster_operation_mesh(profile_data, literal_geometry)
+        revolution_parts.append({
+            "id": side,
+            "geometry": {
+                **literal_geometry,
+                "profile": "glyph",
+                "angular_segments": {"$ref": "component.parameters.segments"},
+                "cell_size": [
+                    {"$ref": "component.parameters.cell"},
+                    {"$ref": "component.parameters.cell"},
+                ],
+                "axis": {
+                    "origin": [
+                        {"$expr": {
+                            "op": "mul",
+                            "args": [
+                                {"$ref": "component.parameters.clip_column"},
+                                {"$ref": "component.parameters.cell"},
+                            ],
+                        }},
+                        0.0,
+                    ],
+                    "direction": [0.0, 1.0],
+                },
+            },
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": list(expected_local_meshes[side][0][0]),
+                "local_rotation": [11.0, -7.0, 13.0] if side == "left" else [-9.0, 15.0, 6.0],
+            }],
+        })
+
+    component = {
+        "parameters": component_parameters,
+        "profiles": {"glyph": profile_data},
+        "parts": revolution_parts,
+        "exposes": [
+            {"name": "left_mount", "source": "left.mount"},
+            {"name": "right_mount", "source": "right.mount"},
+        ],
+    }
+    base = phase2_cube("base", size=4.0, transform={
+        "position": [1.0, -2.0, 3.0],
+        "rotation": [13.0, 21.0, -6.0],
+        "scale": [1.0, 1.0, 1.0],
+    }, anchors=[
+        {"name": "left_socket", "parent": "main", "local_position": [-1.0, 0.5, 0.25], "local_rotation": [9.0, 12.0, -5.0]},
+        {"name": "right_socket", "parent": "main", "local_position": [1.0, -0.5, -0.25], "local_rotation": [-7.0, 5.0, 14.0]},
+    ])
+    value = v06_recipe(None, [base])
+    value["object"].pop("profile")
+    value["object"]["profiles"] = {"glyph": {"type": "raster", "width": 1, "height": 1, "data": [1]}}
+    value["object"]["components"] = {"GlyphRevolution": component}
+    value["object"]["instances"] = [{
+        "id": "revolutions",
+        "component": "GlyphRevolution",
+        "transform": {"rotation": [8.0, -12.0, 19.0], "scale": [1.1, 0.9, 1.2]},
+    }]
+    value["object"]["connections"] = [
+        {
+            "id": f"{side}-revolution-snap",
+                "part": f"revolutions.{side}_mount",
+                "anchor": "mount",
+            "target": {"part": "base", "anchor": f"{side}_socket"},
+            "mode": "snap",
+            "rotation_offset": [7.0, -4.0, 12.0],
+        }
+        for side in ("left", "right")
+    ]
+
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    first_by_id = {part.part_id: part for part in first}
+    assert [part.part_id for part in first] == ["base", "revolutions.left", "revolutions.right"]
+    assert [(part.vertices, part.faces, part.edges) for part in first] == [
+        (part.vertices, part.faces, part.edges) for part in second
+    ]
+
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    flattened_by_id = {part["id"]: part for part in flattened["object"]["parts"]}
+    for side in ("left", "right"):
+        built = first_by_id[f"revolutions.{side}"]
+        local_vertices, local_faces, local_edges = expected_local_meshes[side]
+        assert (flattened_by_id[built.part_id]["_generated_mesh"]) == (local_vertices, local_faces, local_edges)
+        assert_valid_rotational_mesh(built)
+        retained = [
+            (column, row)
+            for column, row in object_recipe.iter_occupied_cells(profile)
+            if (side == "left" and column < clip_column)
+            or (side == "right" and column >= clip_column)
+        ]
+        assert retained
+        target_anchor = object_recipe._resolve_v04_local_anchors(
+            base,
+            streamlit_app.OBJECT_REGISTRY["SimpleBlock"]["generator"](base["parameters"])[0],
+        )[f"{side}_socket"]
+        target_world = object_recipe._v04_anchor_world(target_anchor, {
+            "position": base["transform"]["position"],
+            "rotation": object_recipe._rotation_matrix(base["transform"]["rotation"]),
+            "scale": base["transform"]["scale"],
+        })
+        source_local_mount = expected_local_meshes[side][0][0]
+        anchor_decl = next(anchor for anchor in next(item for item in component["parts"] if item["id"] == side)["anchors"] if anchor["name"] == "mount")
+        assert tuple(anchor_decl["local_position"]) == pytest.approx(source_local_mount)
+        assert first_by_id[built.part_id].vertices[0] == pytest.approx(target_world.position)
+
+    assert first_by_id["revolutions.left"].faces != first_by_id["revolutions.right"].faces
+    combined = object_recipe.combine_recipe_parts(first)
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+    assert all(math.isfinite(value) for vertex in combined[0] for value in vertex)
+    figure = streamlit_app.build_plotly_figure(*combined, angles=(0, 0, 0))
+    trace = figure.data[0]
+    assert trace.type == "mesh3d"
+    assert len(trace.x) == len(combined[0])
+    assert len(trace.i) == len(combined[1])
+
+
+def test_v06_unicode_torus_component_modes_snap_end_to_end():
+    profile_data = phase5d_unicode_profile()
+    profile = object_recipe.load_profile(profile_data)
+    clip_column = profile.width // 2
+    parameters = {"segments": 16, "cell": 0.18, "clip_column": clip_column, "offset": 1.4}
+    plane = explicit_plane(
+        origin=(-0.4, 0.3, 0.8),
+        x_axis=(math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+        y_axis=(0.0, 1.0, 0.0),
+    )
+    torus_parts = []
+    expected_local_meshes = {}
+    for mode in ("clip", "offset"):
+        literal_geometry = {
+            "type": "raster_torus",
+            "profile": "glyph",
+            "plane": plane,
+            "angular_segments": parameters["segments"],
+            "cell_size": [parameters["cell"], parameters["cell"]],
+        }
+        if mode == "clip":
+            literal_geometry.update({
+                "axis_mode": "clip_axis",
+                "clipping": {"side": "right", "axis_column": clip_column},
+            })
+        else:
+            literal_geometry.update({
+                "axis_mode": "offset_from_profile",
+                "axis_side": "left",
+                "axis_offset": parameters["offset"],
+            })
+        expected_local_meshes[mode] = object_recipe._build_raster_operation_mesh(profile_data, literal_geometry)
+        geometry = copy.deepcopy(literal_geometry)
+        geometry["angular_segments"] = {"$ref": "component.parameters.segments"}
+        geometry["cell_size"] = [
+            {"$ref": "component.parameters.cell"},
+            {"$ref": "component.parameters.cell"},
+        ]
+        if mode == "clip":
+            geometry["clipping"]["axis_column"] = {"$ref": "component.parameters.clip_column"}
+        else:
+            geometry["axis_offset"] = {"$ref": "component.parameters.offset"}
+        torus_parts.append({
+            "id": mode,
+            "geometry": geometry,
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": list(expected_local_meshes[mode][0][0]),
+                "local_rotation": [9.0, 12.0, -5.0] if mode == "clip" else [-7.0, 5.0, 14.0],
+            }],
+        })
+
+    component = {
+        "parameters": parameters,
+        "profiles": {"glyph": profile_data},
+        "parts": torus_parts,
+        "exposes": [
+            {"name": "clip_mount", "source": "clip.mount"},
+            {"name": "offset_mount", "source": "offset.mount"},
+        ],
+    }
+    base = phase2_cube("base", size=4.0, transform={
+        "position": [-1.0, 2.0, 1.5],
+        "rotation": [-9.0, 18.0, 11.0],
+        "scale": [1.0, 1.0, 1.0],
+    }, anchors=[
+        {"name": "clip_socket", "parent": "main", "local_position": [-1.0, 0.2, 0.5], "local_rotation": [4.0, -8.0, 12.0]},
+        {"name": "offset_socket", "parent": "main", "local_position": [1.0, -0.2, -0.5], "local_rotation": [-12.0, 6.0, 9.0]},
+    ])
+    value = v06_recipe(None, [base])
+    value["object"].pop("profile")
+    value["object"]["profiles"] = {"glyph": {"type": "raster", "width": 1, "height": 1, "data": [1]}}
+    value["object"]["components"] = {"GlyphTorus": component}
+    value["object"]["instances"] = [{
+        "id": "rings",
+        "component": "GlyphTorus",
+        "transform": {"rotation": [14.0, 7.0, -16.0], "scale": [1.1, 0.95, 1.2]},
+    }]
+    value["object"]["connections"] = [
+        {
+            "id": f"{mode}-torus-snap",
+            "part": f"rings.{mode}_mount",
+            "anchor": "mount",
+            "target": {"part": "base", "anchor": f"{mode}_socket"},
+            "mode": "snap",
+            "rotation_offset": [3.0, -11.0, 8.0],
+        }
+        for mode in ("clip", "offset")
+    ]
+
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    first_by_id = {part.part_id: part for part in first}
+    assert [part.part_id for part in first] == ["base", "rings.clip", "rings.offset"]
+    assert [(part.vertices, part.faces, part.edges) for part in first] == [
+        (part.vertices, part.faces, part.edges) for part in second
+    ]
+    flat = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    flat_by_id = {part["id"]: part for part in flat["object"]["parts"]}
+    for mode in ("clip", "offset"):
+        torus = first_by_id[f"rings.{mode}"]
+        assert torus.object_type == "RasterTorus"
+        assert "evolution" not in next(part for part in component["parts"] if part["id"] == mode)["geometry"]
+        assert flat_by_id[torus.part_id]["_generated_mesh"] == expected_local_meshes[mode]
+        assert_valid_rotational_mesh(torus)
+        target_anchor = object_recipe._resolve_v04_local_anchors(
+            base,
+            streamlit_app.OBJECT_REGISTRY["SimpleBlock"]["generator"](base["parameters"])[0],
+        )[f"{mode}_socket"]
+        target_world = object_recipe._v04_anchor_world(target_anchor, {
+            "position": base["transform"]["position"],
+            "rotation": object_recipe._rotation_matrix(base["transform"]["rotation"]),
+            "scale": base["transform"]["scale"],
+        })
+        assert torus.vertices[0] == pytest.approx(target_world.position)
+
+    combined = object_recipe.combine_recipe_parts(first)
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+    assert all(0 <= index < len(combined[0]) for edge in combined[2] for index in edge)
+    assert all(math.isfinite(value) for vertex in combined[0] for value in vertex)
+    figure = streamlit_app.build_plotly_figure(*combined, angles=(0, 0, 0))
+    assert figure.data[0].type == "mesh3d"
+    assert len(figure.data[0].x) == len(combined[0])
+    assert len(figure.data[0].i) == len(combined[1])
+
+
+def test_v06_phase5f_final_mixed_generated_component_assembly():
+    value = phase5d_pyramid_recipe()
+    unicode_profile = value["object"].pop("profile")
+    value["object"]["profiles"] = {
+        "glyph": {"type": "raster", "width": 1, "height": 1, "data": [1]},
+    }
+    components = value["object"]["components"]
+    components["upper_assembly"]["profiles"] = {"glyph": unicode_profile}
+    stack_set = components["stack_set"]
+    stack_set["parameters"] = {"depth": 1.5, "turn": 12.0, "scale_u": 1.1, "scale_v": 0.9}
+    for part in stack_set["parts"]:
+        geometry = part["geometry"]
+        geometry["profile"] = "glyph"
+        geometry["depth"] = {"$ref": "component.parameters.depth"}
+        if part["id"] == "stack_xy":
+            geometry.pop("construction_plane")
+            geometry["plane"] = explicit_plane(
+                origin=(0.35, -0.2, 0.6),
+                x_axis=(math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+                y_axis=(0.0, 1.0, 0.0),
+            )
+            geometry["evolution"]["rotation_degrees"] = {
+                "start": 0.0,
+                "end": {"$ref": "component.parameters.turn"},
+            }
+            geometry["evolution"]["scale"] = {
+                "start": [1.0, 1.0],
+                "end": [
+                    {"$ref": "component.parameters.scale_u"},
+                    {"$ref": "component.parameters.scale_v"},
+                ],
+            }
+
+    revolution_component = components["raster_revolution"]
+    revolution_component["parameters"] = {"segments": 16, "axis_u": -1.0}
+    revolution_component["profiles"] = {"glyph": unicode_profile}
+    revolution_geometry = revolution_component["parts"][0]["geometry"]
+    revolution_geometry["profile"] = "glyph"
+    revolution_geometry.pop("construction_plane")
+    revolution_geometry["plane"] = explicit_plane(
+        origin=(-0.25, 0.4, 0.3),
+        x_axis=(math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+        y_axis=(0.0, 1.0, 0.0),
+    )
+    revolution_geometry["angular_segments"] = {"$ref": "component.parameters.segments"}
+    revolution_geometry["axis"]["origin"][0] = {"$ref": "component.parameters.axis_u"}
+
+    torus_component = components["raster_torus"]
+    torus_component["parameters"] = {"segments": 16, "clip_column": unicode_profile["width"] // 2}
+    torus_component["profiles"] = {"glyph": unicode_profile}
+    torus_geometry_value = torus_component["parts"][0]["geometry"]
+    torus_geometry_value["profile"] = "glyph"
+    torus_geometry_value.pop("construction_plane")
+    torus_geometry_value["plane"] = explicit_plane(
+        origin=(0.2, 0.3, -0.4),
+        x_axis=(math.sqrt(0.5), 0.0, math.sqrt(0.5)),
+        y_axis=(0.0, 1.0, 0.0),
+    )
+    torus_geometry_value["angular_segments"] = {"$ref": "component.parameters.segments"}
+    torus_geometry_value["clipping"]["axis_column"] = {"$ref": "component.parameters.clip_column"}
+
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    expected_ids = [
+        "cube",
+        "crown.body.stack_xy",
+        "crown.body.stack_yz",
+        "crown.body.stack_zx",
+        "crown.crest.revolution",
+        "torus_north_east.ring",
+        "torus_north_west.ring",
+        "torus_south_east.ring",
+        "torus_south_west.ring",
+    ]
+    assert [part.part_id for part in first] == expected_ids
+    assert [(part.vertices, part.faces, part.edges) for part in first] == [
+        (part.vertices, part.faces, part.edges) for part in second
+    ]
+    assert {part.object_type for part in first} == {
+        "SimpleBlock", "RasterStack", "RasterRevolution", "RasterTorus",
+    }
+
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    flattened_by_id = {part["id"]: part for part in flattened["object"]["parts"]}
+    stack_vertices = flattened_by_id["crown.body.stack_xy"]["_generated_mesh"][0]
+    normal = (-math.sqrt(0.5), 0.0, math.sqrt(0.5))
+    origin = (0.35, -0.2, 0.6)
+    normal_coordinates = [
+        sum((vertex[axis] - origin[axis]) * normal[axis] for axis in range(3))
+        for vertex in stack_vertices
+    ]
+    assert max(normal_coordinates) - min(normal_coordinates) == pytest.approx(1.5)
+    for generated in first:
+        if generated.object_type.startswith("Raster"):
+            assert generated.vertices and generated.faces and generated.edges
+            assert all(math.isfinite(value) for vertex in generated.vertices for value in vertex)
+            assert all(0 <= index < len(generated.vertices) for face in generated.faces for index in face)
+            assert_valid_rotational_mesh(generated)
+
+    flattened_connection = next(
+        connection for connection in flattened["object"]["connections"]
+        if connection["id"] == "crown.connection"
+    )
+    assert flattened_connection["part"] == "crown.body.stack_xy"
+    combined = object_recipe.combine_recipe_parts(first)
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+    assert all(0 <= index < len(combined[0]) for edge in combined[2] for index in edge)
+    figure = streamlit_app.build_plotly_figure(*combined, angles=(0, 0, 0))
+    assert figure.data[0].type == "mesh3d"
+    assert len(figure.data[0].x) == len(combined[0])
+    assert len(figure.data[0].i) == len(combined[1])
+
+
+@pytest.mark.parametrize("operation", ["revolution", "torus"])
+def test_v06_phase5f_clipping_axis_must_fit_raster_profile(operation):
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    if operation == "revolution":
+        geometry = {
+            **revolution_geometry(
+                clipping={"side": "right", "axis_column": 3},
+                axis={"origin": [3, 0], "direction": [0, 1]},
+            ),
+            "type": "raster_revolution",
+        }
+    else:
+        geometry = {
+            **torus_geometry(
+                axis_mode="clip_axis",
+                clipping={"side": "right", "axis_column": 3},
+            ),
+            "type": "raster_torus",
+        }
+
+    with pytest.raises(object_recipe.RecipeError, match="axis_column must be a grid boundary"):
+        object_recipe.build_recipe_parts(
+            v06_recipe(profile, [raster_operation_part(operation, **geometry)]),
+            streamlit_app.OBJECT_REGISTRY,
+        )
+
+
+def test_v06_phase5f_transform_validation_rejects_zero_scale_and_malformed_rotation():
+    zero_scale = phase2_cube("scaled")
+    zero_scale["transform"] = {"scale": [1.0, 0.0, 1.0]}
+    zero_scale_recipe = v06_recipe(None, [zero_scale])
+    zero_scale_recipe["object"].pop("profile")
+    with pytest.raises(object_recipe.RecipeError, match="scale cannot contain zero"):
+        object_recipe.build_recipe_parts(zero_scale_recipe, streamlit_app.OBJECT_REGISTRY)
+
+    malformed_rotation = phase2_cube("rotated")
+    malformed_rotation["transform"] = {"rotation": [0.0, 90.0]}
+    malformed_rotation_recipe = v06_recipe(None, [malformed_rotation])
+    malformed_rotation_recipe["object"].pop("profile")
+    with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
+        object_recipe.build_recipe_parts(malformed_rotation_recipe, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5f_duplicate_and_conflicting_connections_are_rejected():
+    duplicate_ids = v06_recipe(None, [phase2_cube("source_a"), phase2_cube("source_b"), phase2_cube("target")])
+    duplicate_ids["object"]["connections"] = [
+        {"id": "duplicate", "part": "source_a", "anchor": "center", "target": {"part": "target", "anchor": "center"}, "mode": "position"},
+        {"id": "duplicate", "part": "source_b", "anchor": "center", "target": {"part": "target", "anchor": "center"}, "mode": "position"},
+    ]
+    multiple_source_connections = v06_recipe(None, [phase2_cube("source"), phase2_cube("target_a"), phase2_cube("target_b")])
+    multiple_source_connections["object"]["connections"] = [
+        {"id": "source-to-a", "part": "source", "anchor": "center", "target": {"part": "target_a", "anchor": "center"}, "mode": "position"},
+        {"id": "source-to-b", "part": "source", "anchor": "center", "target": {"part": "target_b", "anchor": "center"}, "mode": "position"},
+    ]
+    duplicate_ids["object"].pop("profile")
+    multiple_source_connections["object"].pop("profile")
+
+    with pytest.raises(object_recipe.RecipeError, match="Duplicate connection ID"):
+        object_recipe.build_recipe_parts(duplicate_ids, streamlit_app.OBJECT_REGISTRY)
+    with pytest.raises(object_recipe.RecipeError, match="multiple positional connections"):
+        object_recipe.build_recipe_parts(multiple_source_connections, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5f_rotational_mesh_respects_generated_mesh_budget():
+    profile = {"type": "raster", "width": 128, "height": 128, "data": [1] * (128 * 128)}
+    geometry = raster_operation_part(
+        "revolution",
+        **revolution_geometry(
+            angular_segments=256,
+            axis={"origin": [-1, 0], "direction": [0, 1]},
+        ),
+    )
+
+    with pytest.raises(object_recipe.RecipeError, match="mesh size limit"):
+        object_recipe.build_recipe_parts(v06_recipe(profile, [geometry]), streamlit_app.OBJECT_REGISTRY)
+
+
 def test_v06_unicode_raster_revolution_snaps_to_block_and_reaches_plotly():
     character = "\N{LATIN CAPITAL LETTER A}"
     font = ImageFont.load_default()
