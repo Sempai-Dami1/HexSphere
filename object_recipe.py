@@ -95,38 +95,38 @@ RECIPE_SCHEMA_V05 = _load_schema(SCHEMA_PATH_V05)
 RECIPE_SCHEMA_V06 = _load_schema(SCHEMA_PATH_V06)
 PROFILE_SCHEMA = RECIPE_SCHEMA_V05["$defs"]["profile"]
 MAX_PROFILE_DIMENSION = RECIPE_SCHEMA_V05["$defs"]["profileDimension"]["maximum"]
-MAX_STACK_LAYERS = RECIPE_SCHEMA_V06["$defs"]["stackLayerCount"]["maximum"]
+MAX_STACK_LAYERS = RECIPE_SCHEMA_V06["$defs"]["stackLayerCount"]["anyOf"][0]["maximum"]
 STACK_DEPTH_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["stackDepth"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["stackDepth"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["stackDepth"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["stackDepth"]["anyOf"][0]["maximum"],
 )
 STACK_CELL_SIZE_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["cellSizeDimension"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["cellSizeDimension"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["cellSizeDimension"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["cellSizeDimension"]["anyOf"][0]["maximum"],
 )
 STACK_EVOLUTION_SHIFT_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["evolutionShiftValue"]["items"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["evolutionShiftValue"]["items"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionShiftValue"]["items"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionShiftValue"]["items"]["anyOf"][0]["maximum"],
 )
 STACK_EVOLUTION_ROTATION_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["evolutionRotationValue"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["evolutionRotationValue"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionRotationValue"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionRotationValue"]["anyOf"][0]["maximum"],
 )
 STACK_EVOLUTION_SCALE_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["evolutionScaleValue"]["items"]["anyOf"][0]["maximum"],
 )
 ROTATIONAL_ANGLE_SEGMENT_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["angularSegments"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["angularSegments"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["angularSegments"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["angularSegments"]["anyOf"][0]["maximum"],
 )
 ROTATIONAL_AXIS_COORDINATE_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["constructionCoordinate"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["constructionCoordinate"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["constructionCoordinate"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["constructionCoordinate"]["anyOf"][0]["maximum"],
 )
 TORUS_AXIS_OFFSET_LIMITS = (
-    RECIPE_SCHEMA_V06["$defs"]["rasterTorusGeometry"]["properties"]["axis_offset"]["minimum"],
-    RECIPE_SCHEMA_V06["$defs"]["rasterTorusGeometry"]["properties"]["axis_offset"]["maximum"],
+    RECIPE_SCHEMA_V06["$defs"]["rasterTorusGeometry"]["properties"]["axis_offset"]["anyOf"][0]["minimum"],
+    RECIPE_SCHEMA_V06["$defs"]["rasterTorusGeometry"]["properties"]["axis_offset"]["anyOf"][0]["maximum"],
 )
 _RECIPE_VALIDATORS = {
     RECIPE_VERSION: Draft202012Validator(RECIPE_SCHEMA),
@@ -603,6 +603,8 @@ def _build_raster_revolution_mesh(
             if not ROTATIONAL_AXIS_COORDINATE_LIMITS[0] <= coordinate <= ROTATIONAL_AXIS_COORDINATE_LIMITS[1]:
                 raise RecipeError("Revolution axis coordinates exceed the allowed range.")
         axis_origin = (float(axis_origin[0]), float(axis_origin[1]))
+        if any(abs(float(value)) > 1.0 for value in axis_direction):
+            raise RecipeError("Revolution axis direction components must be within -1 and 1.")
         direction_length = math.hypot(float(axis_direction[0]), float(axis_direction[1]))
         if direction_length <= 1e-12:
             raise RecipeError("Revolution axis direction cannot be zero.")
@@ -824,15 +826,6 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
 
     if version in {RECIPE_VERSION_V05, RECIPE_VERSION_V06} and "profile" in recipe["object"]:
         validate_profile(recipe["object"]["profile"])
-    has_root_generated_part = any("geometry" in part for part in recipe["object"]["parts"])
-    has_component_generated_part = any(
-        "geometry" in part
-        for component in recipe["object"].get("components", {}).values()
-        for part in component.get("parts", [])
-    )
-    if version == RECIPE_VERSION_V06 and (has_root_generated_part or has_component_generated_part):
-        if "profile" not in recipe["object"]:
-            raise RecipeError("Generated raster geometry requires object.profile.")
 
     parts = recipe["object"]["parts"]
     part_ids = [part["id"] for part in parts]
@@ -844,6 +837,8 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
         _validate_v03_relationships(recipe)
     if version in {RECIPE_VERSION_V04, RECIPE_VERSION_V05, RECIPE_VERSION_V06}:
         _validate_v03_relationships(recipe)
+    if version == RECIPE_VERSION_V06:
+        _validate_v06_profile_scopes(recipe)
     return deepcopy(dict(recipe))
 
 
@@ -1209,6 +1204,121 @@ def _resolve_v03_mapping(values: Mapping[str, Any], scopes: Mapping[str, Mapping
     return resolved
 
 
+def _resolve_raster_profile(
+    selector: str,
+    root_profile: Mapping[str, Any] | None,
+    profile_scopes: tuple[Mapping[str, Any], ...],
+    location: str,
+) -> Mapping[str, Any]:
+    if selector == "object.profile":
+        if root_profile is None:
+            raise RecipeError(f"{location} cannot resolve profile 'object.profile'.")
+        return root_profile
+    for profile_scope in profile_scopes:
+        if selector in profile_scope:
+            return profile_scope[selector]
+    raise RecipeError(f"{location} cannot resolve profile '{selector}'.")
+
+
+def _resolve_generated_geometry_values(
+    value: Any,
+    scopes: Mapping[str, Mapping[str, Any]],
+    location: str,
+    key: str = "",
+) -> Any:
+    if key == "profile":
+        return value
+    if isinstance(value, list):
+        return [
+            _resolve_generated_geometry_values(item, scopes, f"{location}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, Mapping):
+        if set(value) == {"$ref"} or set(value) == {"$expr"}:
+            return _resolve_v03_value(value, scopes, {}, location)
+        return {
+            name: _resolve_generated_geometry_values(item, scopes, f"{location}.{name}", name)
+            for name, item in value.items()
+        }
+    return value
+
+
+def _validate_v06_profile_scopes(recipe: Mapping[str, Any]) -> None:
+    obj = recipe["object"]
+    components = obj.get("components", {})
+    root_profile = obj.get("profile")
+    root_profiles = obj.get("profiles", {})
+    for profile_name, profile in root_profiles.items():
+        try:
+            validate_profile(profile)
+        except RecipeError as exc:
+            raise RecipeError(f"Object profile '{profile_name}' is invalid: {exc}") from exc
+    for component_name, component in components.items():
+        for profile_name, profile in component.get("profiles", {}).items():
+            try:
+                validate_profile(profile)
+            except RecipeError as exc:
+                raise RecipeError(
+                    f"Component '{component_name}' profile '{profile_name}' is invalid: {exc}"
+                ) from exc
+
+    def validate_parts(
+        parts: list[Mapping[str, Any]],
+        location: str,
+        profile_scopes: tuple[Mapping[str, Any], ...],
+    ) -> None:
+        for part in parts:
+            geometry = part.get("geometry")
+            if geometry is None:
+                continue
+            selector = geometry.get("profile", "object.profile")
+            _resolve_raster_profile(
+                selector,
+                root_profile,
+                profile_scopes,
+                f"{location} part '{part['id']}'",
+            )
+
+    def visit_component(
+        component_name: str,
+        location: str,
+        inherited_profiles: tuple[Mapping[str, Any], ...],
+        ancestry: tuple[str, ...],
+    ) -> None:
+        if component_name in ancestry:
+            return
+        component = components.get(component_name)
+        if component is None:
+            raise RecipeError(f"{location} references unknown component '{component_name}'.")
+        local_profiles = component.get("profiles", {})
+        profile_scopes = (local_profiles, *inherited_profiles)
+        validate_parts(component.get("parts", []), location, profile_scopes)
+        next_ancestry = (*ancestry, component_name)
+        for instance in component.get("instances", []):
+            nested_location = (
+                f"{location} -> component '{instance['component']}' "
+                f"instance '{instance['id']}'"
+            )
+            visit_component(instance["component"], nested_location, profile_scopes, next_ancestry)
+
+    root_profile_scopes = (root_profiles,)
+    validate_parts(obj.get("parts", []), "Object", root_profile_scopes)
+    for instance in obj.get("instances", []):
+        visit_component(
+            instance["component"],
+            f"Component '{instance['component']}' instance '{instance['id']}'",
+            root_profile_scopes,
+            (),
+        )
+    for replication in obj.get("replications", []):
+        visit_component(
+            replication["component"],
+            f"Component '{replication['component']}' replication '{replication['id']}'",
+            root_profile_scopes,
+            (),
+        )
+
+
 def _v03_vector(value: Any, scopes: Mapping[str, Mapping[str, Any]], dimensions: Mapping[str, Any], location: str) -> list[float]:
     result = _resolve_v03_value(value, scopes, dimensions, location)
     if not isinstance(result, list) or len(result) != 3:
@@ -1265,11 +1375,16 @@ def _expand_v03_component(
     components: Mapping[str, Any],
     depth: int,
     matrix_mode: bool = False,
+    profile_scopes: tuple[Mapping[str, Any], ...] = (),
+    scope_path: str = "",
+    root_profile: Mapping[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, tuple[str, str]]]:
     if depth > MAX_V03_COMPONENT_DEPTH:
         raise RecipeError("Component nesting exceeds the Phase 3 limit.")
     component_parameters = _resolve_v03_mapping(component.get("parameters", {}), {"parameters": instance_parameters, "component": instance_parameters, "root": top_parameters}, f"component.{component_name}.parameters")
     scopes = {"parameters": top_parameters, "component": component_parameters, "instance": instance_parameters}
+    local_profiles = component.get("profiles", {})
+    effective_profile_scopes = (local_profiles, *profile_scopes)
     parts = []
     for part in component.get("parts", []):
         part_id = f"{instance_id}.{part['id']}"
@@ -1277,7 +1392,20 @@ def _expand_v03_component(
         copied["id"] = part_id
         copied["transform"] = _compose_v03_transforms(instance_transform, _v03_transform(part.get("transform", {}), scopes, {}, part_id), matrix_mode)
         copied["anchors"] = [_prefix_anchor(anchor, scopes, {}, f"{part_id}.anchors[{index}]") for index, anchor in enumerate(part.get("anchors", []))]
-        if "geometry" not in part:
+        if "geometry" in part:
+            geometry_location = f"{scope_path} part '{part['id']}'"
+            copied["_geometry_location"] = geometry_location
+            selector = part["geometry"].get("profile", "object.profile")
+            copied["_resolved_profile"] = _resolve_raster_profile(
+                selector,
+                root_profile,
+                effective_profile_scopes,
+                geometry_location,
+            )
+            copied["_resolved_geometry"] = _resolve_generated_geometry_values(
+                part["geometry"], scopes, geometry_location
+            )
+        else:
             copied["parameters"] = {
                 name: _resolve_v03_value(value, scopes, {}, f"{part_id}.parameters.{name}")
                 for name, value in part["parameters"].items()
@@ -1311,7 +1439,9 @@ def _expand_v03_component(
         nested_parts, nested_connections, nested_anchors = _expand_v03_component(
             nested["component"], nested_component, f"{instance_id}.{nested['id']}", resolved_nested,
             nested_transform, top_parameters, components, depth + 1,
-            matrix_mode,
+            matrix_mode, effective_profile_scopes,
+            f"{scope_path} -> component '{nested['component']}' instance '{nested['id']}'",
+            root_profile,
         )
         parts.extend(nested_parts)
         connections.extend(nested_connections)
@@ -1337,6 +1467,7 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     obj = recipe["object"]
     matrix_mode = recipe.get("version") in {RECIPE_VERSION_V04, RECIPE_VERSION_V05, RECIPE_VERSION_V06}
     top_parameters = _resolve_v03_mapping(obj.get("parameters", {}), {"root": obj.get("parameters", {})}, "object.parameters")
+    root_profile_scopes = (obj.get("profiles", {}),)
     flat_parts = []
     flat_connections = []
     exposed_anchors: dict[str, tuple[str, str]] = {}
@@ -1344,7 +1475,16 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     for part in obj.get("parts", []):
         copied = dict(part)
         if "geometry" in part:
-            vertices, faces, edges = _build_raster_operation_mesh(obj["profile"], part["geometry"])
+            geometry_location = f"Object part '{part['id']}'"
+            copied["_geometry_location"] = geometry_location
+            geometry = _resolve_generated_geometry_values(part["geometry"], scopes, geometry_location)
+            profile = _resolve_raster_profile(
+                part["geometry"].get("profile", "object.profile"),
+                obj.get("profile"),
+                root_profile_scopes,
+                geometry_location,
+            )
+            vertices, faces, edges = _build_raster_operation_mesh(profile, geometry)
             copied["type"] = {
                 "raster_stack": "RasterStack",
                 "raster_revolution": "RasterRevolution",
@@ -1369,7 +1509,13 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
         instance_transform = _v03_transform(instance.get("transform", {}), scopes, {}, instance["id"])
         if matrix_mode:
             instance_transform["_rotation_matrix"] = _rotation_matrix(instance_transform["rotation"])
-        parts, connections, exposed = _expand_v03_component(instance["component"], component, instance["id"], resolved_instance_parameters, instance_transform, top_parameters, obj["components"], 1, matrix_mode)
+        parts, connections, exposed = _expand_v03_component(
+            instance["component"], component, instance["id"], resolved_instance_parameters,
+            instance_transform, top_parameters, obj["components"], 1, matrix_mode,
+            profile_scopes=root_profile_scopes,
+            scope_path=f"Component '{instance['component']}' instance '{instance['id']}'",
+            root_profile=obj.get("profile"),
+        )
         flat_parts.extend(parts)
         flat_connections.extend(connections)
         for name, endpoint in exposed.items():
@@ -1410,7 +1556,13 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
                 transform["_rotation_matrix"] = _rotation_matrix(transform["rotation"])
             component = obj["components"][replication["component"]]
             parameters = _resolve_v03_mapping(replication.get("parameters", {}), scopes, f"{instance_id}.parameters")
-            parts, connections, exposed = _expand_v03_component(replication["component"], component, instance_id, parameters, transform, top_parameters, obj["components"], 1, matrix_mode)
+            parts, connections, exposed = _expand_v03_component(
+                replication["component"], component, instance_id, parameters, transform,
+                top_parameters, obj["components"], 1, matrix_mode,
+                profile_scopes=root_profile_scopes,
+                scope_path=f"Component '{replication['component']}' replication '{replication['id']}'",
+                root_profile=obj.get("profile"),
+            )
             flat_parts.extend(parts)
             flat_connections.extend(connections)
             for name, endpoint in exposed.items():
@@ -1428,12 +1580,20 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     for part in flat_parts:
         if "geometry" not in part or "_generated_mesh" in part:
             continue
-        vertices, faces, edges = _build_raster_operation_mesh(obj["profile"], part["geometry"])
+        geometry = part.pop("_resolved_geometry", part["geometry"])
+        profile = part.pop("_resolved_profile", obj.get("profile"))
+        geometry_location = part.pop("_geometry_location", f"Part '{part['id']}'")
+        try:
+            vertices, faces, edges = _build_raster_operation_mesh(profile, geometry)
+        except RecipeError as exc:
+            raise RecipeError(
+                f"{geometry_location} has invalid {geometry['type']} geometry after parameter resolution: {exc}"
+            ) from exc
         part["type"] = {
             "raster_stack": "RasterStack",
             "raster_revolution": "RasterRevolution",
             "raster_torus": "RasterTorus",
-        }[part["geometry"]["type"]]
+        }[geometry["type"]]
         part["parameters"] = {}
         part["_generated_mesh"] = (vertices, faces, edges)
     connected_ids = {connection["part"] for connection in flat_connections}

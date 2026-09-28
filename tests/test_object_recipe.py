@@ -983,7 +983,7 @@ def test_v06_raster_stack_uses_existing_anchor_and_connection_pipeline():
     "profile, geometry, message",
     [
         ({"type": "raster", "width": 1, "height": 1, "data": [0]}, raster_stack_part()["geometry"], "empty profile"),
-        ({"type": "raster", "width": 1, "height": 1, "data": [1]}, {"type": "raster_stack", "profile": "other", "layer_count": 2, "depth": 1}, "Invalid recipe structure"),
+        ({"type": "raster", "width": 1, "height": 1, "data": [1]}, {"type": "raster_stack", "profile": "other", "layer_count": 2, "depth": 1}, "cannot resolve profile 'other'"),
         ({"type": "raster", "width": 1, "height": 1, "data": [1]}, {"type": "raster_stack", "profile": "object.profile", "layer_count": 1, "depth": 1}, "Invalid recipe structure"),
     ],
 )
@@ -1445,6 +1445,398 @@ def test_v06_component_stack_requires_root_profile():
 
     with pytest.raises(object_recipe.RecipeError, match="object.profile"):
         object_recipe.validate_recipe(value)
+
+
+def component_raster_stack_part(part_id, profile_name):
+    return {
+        "id": part_id,
+        "geometry": {
+            "type": "raster_stack",
+            "profile": profile_name,
+            "layer_count": 2,
+            "depth": 1.0,
+        },
+    }
+
+
+def test_v06_component_profiles_resolve_lexically_and_shadow_without_mutation():
+    root_profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 0]}
+    outer_profile = {"type": "raster", "width": 2, "height": 1, "data": [0, 1]}
+    inner_profile = {"type": "raster", "width": 1, "height": 2, "data": [1, 0]}
+    value = v06_recipe(root_profile, [component_raster_stack_part("root_part", "object.profile")])
+    value["object"]["profiles"] = {"glyph": root_profile}
+    value["object"]["components"] = {
+        "Outer": {
+            "parameters": {},
+            "profiles": {"glyph": outer_profile},
+            "parts": [component_raster_stack_part("local", "glyph")],
+            "instances": [
+                {"id": "inherited", "component": "Inner"},
+                {"id": "shadowed", "component": "InnerShadow"},
+            ],
+            "exposes": [],
+        },
+        "Inner": {
+            "parameters": {},
+            "parts": [component_raster_stack_part("body", "glyph")],
+            "exposes": [],
+        },
+        "InnerShadow": {
+            "parameters": {},
+            "profiles": {"glyph": inner_profile},
+            "parts": [component_raster_stack_part("body", "glyph")],
+            "exposes": [],
+        },
+        "RootLookup": {
+            "parameters": {},
+            "parts": [component_raster_stack_part("body", "glyph")],
+            "exposes": [],
+        },
+    }
+    value["object"]["instances"] = [
+        {"id": "assembly", "component": "Outer"},
+        {"id": "root_lookup", "component": "RootLookup"},
+    ]
+
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    parts_by_id = {part.part_id: part for part in first}
+
+    def direct_mesh(profile):
+        recipe_value = v06_recipe(profile, [component_raster_stack_part("expected", "object.profile")])
+        return object_recipe.build_recipe_parts(recipe_value, streamlit_app.OBJECT_REGISTRY)[0]
+
+    expected_root = direct_mesh(root_profile)
+    expected_outer = direct_mesh(outer_profile)
+    expected_inner = direct_mesh(inner_profile)
+    assert parts_by_id["root_part"].vertices == expected_root.vertices
+    assert parts_by_id["assembly.local"].vertices == expected_outer.vertices
+    assert parts_by_id["assembly.inherited.body"].vertices == expected_outer.vertices
+    assert parts_by_id["assembly.shadowed.body"].vertices == expected_inner.vertices
+    assert parts_by_id["root_lookup.body"].vertices == expected_root.vertices
+    assert [part.part_id for part in first] == [part.part_id for part in second]
+    assert [(part.vertices, part.faces, part.edges) for part in first] == [
+        (part.vertices, part.faces, part.edges) for part in second
+    ]
+    assert value["object"]["profile"] == root_profile
+    assert value["object"]["profiles"]["glyph"] == root_profile
+    assert value["object"]["components"]["Outer"]["profiles"]["glyph"] == outer_profile
+    assert value["object"]["components"]["InnerShadow"]["profiles"]["glyph"] == inner_profile
+
+
+def test_v06_direct_generated_part_resolves_named_root_profile():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [0, 1]}
+    value = v06_recipe(None, [component_raster_stack_part("stack", "glyph")])
+    value["object"].pop("profile")
+    value["object"]["profiles"] = {"glyph": profile}
+
+    built = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)[0]
+    expected = object_recipe.build_recipe_parts(
+        v06_recipe(profile, [component_raster_stack_part("expected", "object.profile")]),
+        streamlit_app.OBJECT_REGISTRY,
+    )[0]
+
+    assert built.vertices == expected.vertices
+    assert built.faces == expected.faces
+    assert built.edges == expected.edges
+
+
+@pytest.mark.parametrize("operation", ["stack", "revolution", "torus"])
+def test_v06_component_generated_geometry_parameters_match_literal_geometry(operation):
+    profile = {"type": "raster", "width": 3, "height": 2, "data": [1, 1, 0, 1, 0, 0]}
+    if operation == "stack":
+        geometry = {
+            "type": "raster_stack",
+            "profile": "glyph",
+            "layer_count": {"$ref": "component.parameters.layers"},
+            "depth": {"$expr": {"op": "mul", "args": [{"$ref": "component.parameters.depth"}, 2]}},
+            "cell_size": [{"$ref": "component.parameters.cell"}, 0.5],
+            "plane": {
+                "origin": [0, 0, {"$ref": "component.parameters.origin_z"}],
+                "x_axis": [{"$ref": "component.parameters.axis_scale"}, 0, 0],
+                "y_axis": [0, 1, 0],
+            },
+            "evolution": {
+                "model": "original_profile",
+                "interpolation": "linear",
+                "rotation_degrees": {"start": 0, "end": {"$ref": "component.parameters.turn"}},
+            },
+        }
+        literal_geometry = {
+            **geometry,
+            "profile": "object.profile",
+            "layer_count": 3,
+            "depth": 3.0,
+            "cell_size": [0.75, 0.5],
+            "plane": {"origin": [0, 0, 0.4], "x_axis": [1, 0, 0], "y_axis": [0, 1, 0]},
+            "evolution": {
+                "model": "original_profile",
+                "interpolation": "linear",
+                "rotation_degrees": {"start": 0, "end": 25},
+            },
+        }
+    elif operation == "revolution":
+        geometry = {
+            "type": "raster_revolution",
+            "profile": "glyph",
+            "construction_plane": "xy",
+            "angular_segments": {"$ref": "component.parameters.segments"},
+            "axis": {
+                "origin": [{"$ref": "component.parameters.axis_x"}, 0],
+                "direction": [0, 1],
+            },
+            "cell_size": [{"$ref": "component.parameters.cell"}, 1],
+            "profile_offset": [{"$ref": "component.parameters.profile_x"}, 0],
+        }
+        literal_geometry = {
+            **geometry,
+            "profile": "object.profile",
+            "angular_segments": 12,
+            "axis": {"origin": [-1, 0], "direction": [0, 1]},
+            "cell_size": [0.75, 1],
+            "profile_offset": [0, 0],
+        }
+    else:
+        geometry = {
+            "type": "raster_torus",
+            "profile": "glyph",
+            "construction_plane": "xy",
+            "angular_segments": {"$ref": "component.parameters.segments"},
+            "axis_mode": "offset_from_profile",
+            "axis_side": "right",
+            "axis_offset": {"$ref": "component.parameters.offset"},
+        }
+        literal_geometry = {
+            **geometry,
+            "profile": "object.profile",
+            "angular_segments": 12,
+            "axis_offset": 1.5,
+        }
+
+    component = {
+        "parameters": {"layers": 3, "depth": 1.5, "cell": 0.75, "turn": 25, "segments": 12, "axis_x": -1, "offset": 1.5, "origin_z": 0.4, "axis_scale": 1, "profile_x": 0},
+        "profiles": {"glyph": profile},
+        "parts": [{"id": "generated", "geometry": geometry}],
+        "exposes": [],
+    }
+    parameterized = v06_recipe(None, [])
+    parameterized["object"].pop("profile")
+    parameterized["object"]["components"] = {"Glyph": component}
+    parameterized["object"]["instances"] = [{"id": "glyph", "component": "Glyph"}]
+
+    literal = v06_recipe(profile, [{"id": "generated", "geometry": literal_geometry}])
+    generated = object_recipe.build_recipe_parts(parameterized, streamlit_app.OBJECT_REGISTRY)[0]
+    expected = object_recipe.build_recipe_parts(literal, streamlit_app.OBJECT_REGISTRY)[0]
+
+    assert generated.vertices == expected.vertices
+    assert generated.faces == expected.faces
+    assert generated.edges == expected.edges
+
+
+def test_v06_component_torus_clipping_column_resolves_parameter():
+    profile = {"type": "raster", "width": 3, "height": 2, "data": [1, 1, 0, 1, 0, 1]}
+    parameterized_geometry = {
+        "type": "raster_torus",
+        "profile": "glyph",
+        "construction_plane": "xy",
+        "angular_segments": 12,
+        "axis_mode": "clip_axis",
+        "clipping": {"side": "right", "axis_column": {"$ref": "component.parameters.clip_column"}},
+    }
+    literal_geometry = copy.deepcopy(parameterized_geometry)
+    literal_geometry["profile"] = "object.profile"
+    literal_geometry["clipping"]["axis_column"] = 1
+    parameterized = v06_recipe(None, [])
+    parameterized["object"].pop("profile")
+    parameterized["object"]["components"] = {
+        "ClipRing": {
+            "parameters": {"clip_column": 1},
+            "profiles": {"glyph": profile},
+            "parts": [{"id": "ring", "geometry": parameterized_geometry}],
+            "exposes": [],
+        },
+    }
+    parameterized["object"]["instances"] = [{"id": "ring", "component": "ClipRing"}]
+    literal = v06_recipe(profile, [{"id": "ring", "geometry": literal_geometry}])
+
+    actual = object_recipe.build_recipe_parts(parameterized, streamlit_app.OBJECT_REGISTRY)[0]
+    expected = object_recipe.build_recipe_parts(literal, streamlit_app.OBJECT_REGISTRY)[0]
+
+    assert actual.vertices == expected.vertices
+    assert actual.faces == expected.faces
+    assert actual.edges == expected.edges
+
+
+def test_v06_nested_component_profile_and_parameter_scopes_are_instance_local():
+    profile_a = {"type": "raster", "width": 3, "height": 2, "data": [1, 0, 0, 1, 0, 0]}
+    profile_b = {"type": "raster", "width": 3, "height": 2, "data": [0, 1, 0, 0, 1, 0]}
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["parameters"]["cross_cell"] = 0.25
+    value["object"]["components"] = {
+        "Glyph": {
+            "parameters": {},
+            "parts": [{
+                "id": "stack",
+                "geometry": {
+                    "type": "raster_stack",
+                    "profile": "glyph",
+                    "layer_count": 3,
+                    "depth": {"$ref": "instance.parameters.depth"},
+                    "cell_size": [
+                        {"$ref": "instance.parameters.cell"},
+                        {"$ref": "parameters.cross_cell"},
+                    ],
+                },
+            }],
+            "exposes": [],
+        },
+        "ParentA": {
+            "parameters": {},
+            "profiles": {"glyph": profile_a},
+            "parts": [],
+            "instances": [{
+                "id": "glyph",
+                "component": "Glyph",
+                "parameters": {"depth": 1.5, "cell": 0.4},
+            }],
+            "exposes": [],
+        },
+        "ParentB": {
+            "parameters": {},
+            "profiles": {"glyph": profile_b},
+            "parts": [],
+            "instances": [{
+                "id": "glyph",
+                "component": "Glyph",
+                "parameters": {"depth": 3.0, "cell": 0.7},
+            }],
+            "exposes": [],
+        },
+    }
+    value["object"]["instances"] = [
+        {"id": "instance_a", "component": "ParentA"},
+        {"id": "instance_b", "component": "ParentB"},
+    ]
+
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    first_by_id = {part.part_id: part for part in first}
+    part_a = first_by_id["instance_a.glyph.stack"]
+    part_b = first_by_id["instance_b.glyph.stack"]
+
+    assert part_a.vertices != part_b.vertices
+    assert max(vertex[2] for vertex in part_a.vertices) - min(vertex[2] for vertex in part_a.vertices) == pytest.approx(1.5)
+    assert max(vertex[2] for vertex in part_b.vertices) - min(vertex[2] for vertex in part_b.vertices) == pytest.approx(3.0)
+    assert [(part.vertices, part.faces, part.edges) for part in first] == [
+        (part.vertices, part.faces, part.edges) for part in second
+    ]
+
+    changed = copy.deepcopy(value)
+    changed["object"]["components"]["ParentA"]["instances"][0]["parameters"]["depth"] = 2.25
+    changed_parts = object_recipe.build_recipe_parts(changed, streamlit_app.OBJECT_REGISTRY)
+    changed_by_id = {part.part_id: part for part in changed_parts}
+    assert changed_by_id["instance_a.glyph.stack"].vertices != part_a.vertices
+    assert changed_by_id["instance_b.glyph.stack"].vertices == part_b.vertices
+
+
+def test_v06_component_profile_errors_include_scope_and_reject_dimension_references():
+    component = {
+        "parameters": {"depth": 2.0},
+        "parts": [component_raster_stack_part("body", "missing")],
+        "exposes": [],
+    }
+    unrelated_profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    missing_profile = v06_recipe(unrelated_profile, [])
+    missing_profile["object"]["profiles"] = {"unrelated": unrelated_profile}
+    missing_profile["object"]["components"] = {"GlyphAssembly": component}
+    missing_profile["object"]["instances"] = [{"id": "A", "component": "GlyphAssembly"}]
+    with pytest.raises(object_recipe.RecipeError, match="GlyphAssembly.*instance 'A'.*profile 'missing'"):
+        object_recipe.build_recipe_parts(missing_profile, streamlit_app.OBJECT_REGISTRY)
+
+    dimension_reference = v06_recipe(None, [])
+    dimension_reference["object"].pop("profile")
+    part = component_raster_stack_part("body", "glyph")
+    part["geometry"]["depth"] = {"$ref": "parts.other.dimensions.width"}
+    dimension_reference["object"]["components"] = {
+        "GlyphAssembly": {
+            "parameters": {},
+            "profiles": {"glyph": {"type": "raster", "width": 1, "height": 1, "data": [1]}},
+            "parts": [part],
+            "exposes": [],
+        },
+    }
+    dimension_reference["object"]["instances"] = [{"id": "A", "component": "GlyphAssembly"}]
+    with pytest.raises(object_recipe.RecipeError, match="dimension reference"):
+        object_recipe.build_recipe_parts(dimension_reference, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_component_rejects_malformed_local_raster_profile_with_path():
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["components"] = {
+        "GlyphAssembly": {
+            "parameters": {},
+            "profiles": {"glyph": {"type": "raster", "width": 2, "height": 1, "data": [1]}},
+            "parts": [component_raster_stack_part("body", "glyph")],
+            "exposes": [],
+        },
+    }
+    value["object"]["instances"] = [{"id": "A", "component": "GlyphAssembly"}]
+
+    with pytest.raises(object_recipe.RecipeError, match="Component 'GlyphAssembly' profile 'glyph' is invalid: Invalid profile data length"):
+        object_recipe.validate_recipe(value)
+
+
+@pytest.mark.parametrize(
+    "geometry, parameters, message",
+    [
+        (
+            {"type": "raster_stack", "profile": "glyph", "layer_count": 2, "depth": {"$ref": "component.parameters.depth"}},
+            {"depth": -1},
+            "depth is outside",
+        ),
+        (
+            {
+                "type": "raster_revolution",
+                "profile": "glyph",
+                "construction_plane": "xy",
+                "angular_segments": {"$ref": "component.parameters.segments"},
+                "axis": {"origin": [-1, 0], "direction": [0, 1]},
+            },
+            {"segments": 2},
+            "Angular segment count",
+        ),
+        (
+            {
+                "type": "raster_torus",
+                "profile": "glyph",
+                "construction_plane": "xy",
+                "angular_segments": 8,
+                "axis_mode": "offset_from_profile",
+                "axis_side": "right",
+                "axis_offset": {"$ref": "component.parameters.offset"},
+            },
+            {"offset": 0},
+            "axis_offset",
+        ),
+    ],
+)
+def test_v06_component_invalid_resolved_geometry_reports_component_path(geometry, parameters, message):
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["components"] = {
+        "GlyphAssembly": {
+            "parameters": parameters,
+            "profiles": {"glyph": {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}},
+            "parts": [{"id": "body", "geometry": geometry}],
+            "exposes": [],
+        },
+    }
+    value["object"]["instances"] = [{"id": "A", "component": "GlyphAssembly"}]
+
+    with pytest.raises(object_recipe.RecipeError, match=f"GlyphAssembly.*instance 'A'.*body.*{message}"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
 
 
 def test_v06_cpp_raster_stack_concept_compatibility_fixture():

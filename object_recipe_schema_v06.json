@@ -31,21 +31,24 @@
       "additionalProperties": false
     },
     "stackLayerCount": {
-      "type": "integer",
-      "minimum": 2,
-      "maximum": 128,
+      "anyOf": [
+        {"type": "integer", "minimum": 2, "maximum": 128},
+        {"$ref": "#/$defs/numericParameter"}
+      ],
       "description": "Number of fixed profile cross-sections. The first is at Z=0 and the last is at the requested depth, with equal spacing between them."
     },
     "stackDepth": {
-      "type": "number",
-      "minimum": 0.01,
-      "maximum": 1000,
+      "anyOf": [
+        {"type": "number", "minimum": 0.01, "maximum": 1000},
+        {"$ref": "#/$defs/numericParameter"}
+      ],
       "description": "Total local-space distance along +Z from the first to final cross-section."
     },
     "cellSizeDimension": {
-      "type": "number",
-      "minimum": 0.01,
-      "maximum": 100,
+      "anyOf": [
+        {"type": "number", "minimum": 0.01, "maximum": 100},
+        {"$ref": "#/$defs/numericParameter"}
+      ],
       "description": "Positive construction-space width or height of one raster cell."
     },
     "cellSize": {
@@ -56,14 +59,29 @@
     },
     "evolutionShiftValue": {
       "type": "array",
-      "items": {"type": "number", "minimum": -10000, "maximum": 10000},
+      "items": {
+        "anyOf": [
+          {"type": "number", "minimum": -10000, "maximum": 10000},
+          {"$ref": "#/$defs/numericParameter"}
+        ]
+      },
       "minItems": 2,
       "maxItems": 2
     },
-    "evolutionRotationValue": {"type": "number", "minimum": -3600, "maximum": 3600},
+    "evolutionRotationValue": {
+      "anyOf": [
+        {"type": "number", "minimum": -3600, "maximum": 3600},
+        {"$ref": "#/$defs/numericParameter"}
+      ]
+    },
     "evolutionScaleValue": {
       "type": "array",
-      "items": {"type": "number", "minimum": 0.01, "maximum": 10},
+      "items": {
+        "anyOf": [
+          {"type": "number", "minimum": 0.01, "maximum": 10},
+          {"$ref": "#/$defs/numericParameter"}
+        ]
+      },
       "minItems": 2,
       "maxItems": 2
     },
@@ -117,7 +135,7 @@
       "required": ["type", "profile", "layer_count", "depth"],
       "properties": {
         "type": {"const": "raster_stack"},
-        "profile": {"const": "object.profile"},
+        "profile": {"$ref": "#/$defs/rasterProfileSelector"},
         "layer_count": {"$ref": "#/$defs/stackLayerCount"},
         "depth": {"$ref": "#/$defs/stackDepth"},
         "cell_size": {"$ref": "#/$defs/cellSize"},
@@ -128,8 +146,18 @@
       "not": {"required": ["construction_plane", "plane"]},
       "additionalProperties": false
     },
-    "constructionCoordinate": {"type": "number", "minimum": -1000000, "maximum": 1000000},
-    "planeCoordinate": {"type": "number", "minimum": -1000000, "maximum": 1000000},
+    "constructionCoordinate": {
+      "anyOf": [
+        {"type": "number", "minimum": -1000000, "maximum": 1000000},
+        {"$ref": "#/$defs/numericParameter"}
+      ]
+    },
+    "planeCoordinate": {
+      "anyOf": [
+        {"type": "number", "minimum": -1000000, "maximum": 1000000},
+        {"$ref": "#/$defs/numericParameter"}
+      ]
+    },
     "planeVector3": {
       "type": "array",
       "items": {"$ref": "#/$defs/planeCoordinate"},
@@ -155,7 +183,12 @@
     },
     "axisDirection2": {
       "type": "array",
-      "items": {"type": "number", "minimum": -1, "maximum": 1},
+      "items": {
+        "anyOf": [
+          {"type": "number", "minimum": -1, "maximum": 1},
+          {"$ref": "#/$defs/numericParameter"}
+        ]
+      },
       "minItems": 2,
       "maxItems": 2
     },
@@ -169,14 +202,24 @@
       "additionalProperties": false
     },
     "constructionPlane": {"enum": ["xy", "xz", "yz"]},
-    "angularSegments": {"type": "integer", "minimum": 3, "maximum": 256},
+    "angularSegments": {
+      "anyOf": [
+        {"type": "integer", "minimum": 3, "maximum": 256},
+        {"$ref": "#/$defs/numericParameter"}
+      ]
+    },
     "rasterClipping": {
       "type": "object",
       "description": "Grid-aligned vertical clipping axis. Left retains columns strictly less than axis_column; right retains columns greater than or equal to axis_column. Omit clipping for the full raster.",
       "required": ["side", "axis_column"],
       "properties": {
         "side": {"enum": ["left", "right"]},
-        "axis_column": {"type": "integer", "minimum": 0, "maximum": 128}
+        "axis_column": {
+          "anyOf": [
+            {"type": "integer", "minimum": 0, "maximum": 128},
+            {"$ref": "#/$defs/numericParameter"}
+          ]
+        }
       },
       "additionalProperties": false
     },
@@ -186,6 +229,7 @@
       "required": ["type", "angular_segments", "axis"],
       "properties": {
         "type": {"const": "raster_revolution"},
+        "profile": {"$ref": "#/$defs/rasterProfileSelector"},
         "construction_plane": {"$ref": "#/$defs/constructionPlane"},
         "plane": {"$ref": "#/$defs/plane"},
         "angular_segments": {"$ref": "#/$defs/angularSegments"},
@@ -206,6 +250,7 @@
       "required": ["type", "angular_segments", "axis_mode"],
       "properties": {
         "type": {"const": "raster_torus"},
+        "profile": {"$ref": "#/$defs/rasterProfileSelector"},
         "construction_plane": {"$ref": "#/$defs/constructionPlane"},
         "plane": {"$ref": "#/$defs/plane"},
         "angular_segments": {"$ref": "#/$defs/angularSegments"},
@@ -214,7 +259,12 @@
         "clipping": {"$ref": "#/$defs/rasterClipping"},
         "axis_mode": {"enum": ["clip_axis", "offset_from_profile"]},
         "axis_side": {"enum": ["left", "right"]},
-        "axis_offset": {"type": "number", "minimum": 0.01, "maximum": 10000}
+        "axis_offset": {
+          "anyOf": [
+            {"type": "number", "minimum": 0.01, "maximum": 10000},
+            {"$ref": "#/$defs/numericParameter"}
+          ]
+        }
       },
       "allOf": [
         {
@@ -265,6 +315,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "numericParameter": {
+      "anyOf": [
+        {"$ref": "#/$defs/ref"},
+        {"$ref": "#/$defs/expression"}
+      ]
+    },
+    "rasterProfileSelector": {
+      "type": "string",
+      "pattern": "^(object\\.profile|[A-Za-z_][A-Za-z0-9_-]*)$",
+      "maxLength": 160
     },
     "vector3": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 3, "maxItems": 3},
     "transform": {
@@ -378,6 +439,11 @@
       "required": ["parameters", "parts", "exposes"],
       "properties": {
         "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
+        "profiles": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 80},
+          "additionalProperties": {"$ref": "#/$defs/profile"}
+        },
         "parts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/componentPart"}},
         "connections": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/connection"}},
         "instances": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/instance"}},
@@ -434,6 +500,11 @@
       "properties": {
         "name": {"type": "string", "minLength": 1, "maxLength": 160},
         "profile": {"$ref": "#/$defs/profile"},
+        "profiles": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[A-Za-z_][A-Za-z0-9_-]*$", "maxLength": 80},
+          "additionalProperties": {"$ref": "#/$defs/profile"}
+        },
         "parameters": {"type": "object", "additionalProperties": {"$ref": "#/$defs/value"}},
         "parts": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/recipePart"}},
         "connections": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/connection"}},
@@ -447,7 +518,7 @@
           {"$ref": "#/$defs/revolutionPart"},
           {"$ref": "#/$defs/torusPart"}
         ]}}}},
-        "then": {"required": ["profile"]}
+        "then": {"anyOf": [{"required": ["profile"]}, {"required": ["profiles"]}]}
       }],
       "additionalProperties": false
     }
