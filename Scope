@@ -2,6 +2,10 @@
 
 the Scope of this app is to generate object files, view them, export them
 
+When running o local PC use this script (with explicit path) in the terminal to run the app
+.\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
+
+
 Object Recipe Phase 3 Complete — Relationships and Reuse
 
 Implemented recipe v0.3 as a declarative relationship/reuse layer.

@@ -122,11 +122,31 @@
         "depth": {"$ref": "#/$defs/stackDepth"},
         "cell_size": {"$ref": "#/$defs/cellSize"},
         "construction_plane": {"$ref": "#/$defs/stackConstructionPlane"},
+        "plane": {"$ref": "#/$defs/plane"},
         "evolution": {"$ref": "#/$defs/evolution"}
       },
+      "not": {"required": ["construction_plane", "plane"]},
       "additionalProperties": false
     },
     "constructionCoordinate": {"type": "number", "minimum": -1000000, "maximum": 1000000},
+    "planeCoordinate": {"type": "number", "minimum": -1000000, "maximum": 1000000},
+    "planeVector3": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/planeCoordinate"},
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "plane": {
+      "type": "object",
+      "description": "Local XYZ origin and orthogonal X/Y directions. Directions are normalized and the normal is derived as X cross Y.",
+      "required": ["origin", "x_axis", "y_axis"],
+      "properties": {
+        "origin": {"$ref": "#/$defs/planeVector3"},
+        "x_axis": {"$ref": "#/$defs/planeVector3"},
+        "y_axis": {"$ref": "#/$defs/planeVector3"}
+      },
+      "additionalProperties": false
+    },
     "point2": {
       "type": "array",
       "items": {"$ref": "#/$defs/constructionCoordinate"},
@@ -163,25 +183,31 @@
     "rasterRevolutionGeometry": {
       "type": "object",
       "description": "Revolve the clipped filled raster boundary by angular_segments around the explicit 2D axis in the selected construction plane. Raster X/Y map to XY, XZ, or YZ; each swept point rotates from its in-plane radial direction toward the plane normal. Normalize axis direction. The axis may touch the profile boundary but may not cross occupied interior. Sample angles cover [0, 2*pi) without a duplicate seam ring; the final segment connects back to the first. Vertices on the axis are collapsed and axis-aligned boundary edges are omitted.",
-      "required": ["type", "construction_plane", "angular_segments", "axis"],
+      "required": ["type", "angular_segments", "axis"],
       "properties": {
         "type": {"const": "raster_revolution"},
         "construction_plane": {"$ref": "#/$defs/constructionPlane"},
+        "plane": {"$ref": "#/$defs/plane"},
         "angular_segments": {"$ref": "#/$defs/angularSegments"},
         "axis": {"$ref": "#/$defs/revolutionAxis"},
         "cell_size": {"$ref": "#/$defs/cellSize"},
         "profile_offset": {"$ref": "#/$defs/point2"},
         "clipping": {"$ref": "#/$defs/rasterClipping"}
       },
+      "oneOf": [
+        {"required": ["construction_plane"], "not": {"required": ["plane"]}},
+        {"required": ["plane"], "not": {"required": ["construction_plane"]}}
+      ],
       "additionalProperties": false
     },
     "rasterTorusGeometry": {
       "type": "object",
       "description": "Revolve the clipped filled raster boundary without layer evolution. axis_mode clip_axis revolves around the vertical clipping axis; offset_from_profile places a parallel vertical axis at axis_offset from the selected profile bound.",
-      "required": ["type", "construction_plane", "angular_segments", "axis_mode"],
+      "required": ["type", "angular_segments", "axis_mode"],
       "properties": {
         "type": {"const": "raster_torus"},
         "construction_plane": {"$ref": "#/$defs/constructionPlane"},
+        "plane": {"$ref": "#/$defs/plane"},
         "angular_segments": {"$ref": "#/$defs/angularSegments"},
         "cell_size": {"$ref": "#/$defs/cellSize"},
         "profile_offset": {"$ref": "#/$defs/point2"},
@@ -191,6 +217,12 @@
         "axis_offset": {"type": "number", "minimum": 0.01, "maximum": 10000}
       },
       "allOf": [
+        {
+          "oneOf": [
+            {"required": ["construction_plane"], "not": {"required": ["plane"]}},
+            {"required": ["plane"], "not": {"required": ["construction_plane"]}}
+          ]
+        },
         {
           "if": {"properties": {"axis_mode": {"const": "clip_axis"}}},
           "then": {"required": ["clipping"], "not": {"anyOf": [{"required": ["axis_side"]}, {"required": ["axis_offset"]}]}}
@@ -312,7 +344,9 @@
     "componentPart": {
       "oneOf": [
         {"$ref": "#/$defs/part"},
-        {"$ref": "#/$defs/stackPart"}
+        {"$ref": "#/$defs/stackPart"},
+        {"$ref": "#/$defs/revolutionPart"},
+        {"$ref": "#/$defs/torusPart"}
       ]
     },
     "target": {

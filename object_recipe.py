@@ -244,6 +244,87 @@ def _interpolated_evolution_value(
     )
 
 
+def _resolve_raster_plane_frame(
+    geometry: Mapping[str, Any], operation: str
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    rotational_bases = {
+        "xy": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        "xz": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        "yz": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    }
+    legacy_bases = {
+        "raster_stack": {
+            "xy": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+            "yz": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
+            "zx": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        },
+        "raster_revolution": rotational_bases,
+        "raster_torus": rotational_bases,
+    }
+    explicit_plane = geometry.get("plane")
+    if explicit_plane is None:
+        plane_name = geometry.get("construction_plane", "xy")
+        basis = legacy_bases[operation].get(plane_name)
+        if basis is None:
+            if operation == "raster_stack":
+                raise RecipeError("Unsupported raster stack construction plane.")
+            raise RecipeError("Unsupported rotational construction plane.")
+        basis_u, basis_v = basis[:2]
+        if operation == "raster_stack":
+            basis_normal = basis[2]
+        else:
+            basis_normal = (
+                basis_u[1] * basis_v[2] - basis_u[2] * basis_v[1],
+                basis_u[2] * basis_v[0] - basis_u[0] * basis_v[2],
+                basis_u[0] * basis_v[1] - basis_u[1] * basis_v[0],
+            )
+        return (0.0, 0.0, 0.0), basis_u, basis_v, basis_normal
+
+    if "construction_plane" in geometry:
+        raise RecipeError("Specify either construction_plane or plane, not both.")
+    if not isinstance(explicit_plane, Mapping):
+        raise RecipeError("Raster construction plane must be an object.")
+
+    def vector(name: str) -> tuple[float, float, float]:
+        value = explicit_plane.get(name)
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            raise RecipeError(f"Raster plane {name} must contain three finite coordinates.")
+        if any(
+            isinstance(component, bool)
+            or not isinstance(component, (int, float))
+            or not math.isfinite(component)
+            or abs(component) > MAX_ABS_NUMBER
+            for component in value
+        ):
+            raise RecipeError(f"Raster plane {name} must contain three finite bounded coordinates.")
+        return tuple(float(component) for component in value)
+
+    origin = vector("origin")
+
+    def unit_axis(name: str) -> tuple[float, float, float]:
+        axis = vector(name)
+        length = math.hypot(*axis)
+        if length <= 1e-12:
+            raise RecipeError(f"Raster plane {name} cannot be zero.")
+        return tuple(component / length for component in axis)
+
+    basis_u = unit_axis("x_axis")
+    basis_v = unit_axis("y_axis")
+    dot = sum(basis_u[index] * basis_v[index] for index in range(3))
+    if abs(dot) > 1e-9:
+        raise RecipeError("Raster plane x_axis and y_axis must be orthogonal.")
+    cross = (
+        basis_u[1] * basis_v[2] - basis_u[2] * basis_v[1],
+        basis_u[2] * basis_v[0] - basis_u[0] * basis_v[2],
+        basis_u[0] * basis_v[1] - basis_u[1] * basis_v[0],
+    )
+    normal_length = math.hypot(*cross)
+    if normal_length <= 1e-12:
+        raise RecipeError("Raster plane axes cannot be parallel.")
+    basis_normal = tuple(component / normal_length for component in cross)
+    return origin, basis_u, basis_v, basis_normal
+
+
 def _build_raster_stack_mesh(
     profile_value: Mapping[str, Any], geometry: Mapping[str, Any]
 ) -> tuple[list[tuple[float, float, float]], list[tuple[int, int, int]], list[tuple[int, int]]]:
@@ -270,15 +351,7 @@ def _build_raster_stack_mesh(
     evolution = geometry.get("evolution", {})
     if not isinstance(evolution, Mapping):
         raise RecipeError("Raster stack evolution must be an object.")
-    plane_bases = {
-        "xy": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-        "yz": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)),
-        "zx": ((0.0, 0.0, 1.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-    }
-    plane_basis = plane_bases.get(geometry.get("construction_plane", "xy"))
-    if plane_basis is None:
-        raise RecipeError("Unsupported raster stack construction plane.")
-    basis_u, basis_v, basis_normal = plane_basis
+    plane_origin, basis_u, basis_v, basis_normal = _resolve_raster_plane_frame(geometry, "raster_stack")
 
     occupied = {
         (column, profile.height - row - 1)
@@ -373,7 +446,10 @@ def _build_raster_stack_mesh(
             plane_x = canvas_center_x + cosine * relative_x - sine * relative_y + shift_x
             plane_y = canvas_center_y + sine * relative_x + cosine * relative_y + shift_y
             point = tuple(
-                plane_x * basis_u[axis] + plane_y * basis_v[axis] + z * basis_normal[axis]
+                plane_origin[axis]
+                + plane_x * basis_u[axis]
+                + plane_y * basis_v[axis]
+                + z * basis_normal[axis]
                 for axis in range(3)
             )
             if any(not math.isfinite(value) or abs(value) > MAX_ABS_NUMBER for value in point):
@@ -532,25 +608,15 @@ def _build_raster_revolution_mesh(
             raise RecipeError("Revolution axis direction cannot be zero.")
         axis_direction = (float(axis_direction[0]) / direction_length, float(axis_direction[1]) / direction_length)
 
-    plane_name = geometry.get("construction_plane", "xy")
-    plane_basis = {
-        "xy": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
-        "xz": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
-        "yz": ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-    }.get(plane_name)
-    if plane_basis is None:
-        raise RecipeError("Unsupported rotational construction plane.")
-    basis_u, basis_v = plane_basis
-    plane_normal = (
-        basis_u[1] * basis_v[2] - basis_u[2] * basis_v[1],
-        basis_u[2] * basis_v[0] - basis_u[0] * basis_v[2],
-        basis_u[0] * basis_v[1] - basis_u[1] * basis_v[0],
-    )
+    plane_origin, basis_u, basis_v, plane_normal = _resolve_raster_plane_frame(geometry, expected_type)
     direction_u, direction_v = axis_direction
     radial_basis_2d = (direction_v, -direction_u)
     axis_direction_3d = tuple(direction_u * basis_u[i] + direction_v * basis_v[i] for i in range(3))
     radial_basis_3d = tuple(radial_basis_2d[0] * basis_u[i] + radial_basis_2d[1] * basis_v[i] for i in range(3))
-    axis_origin_3d = tuple(axis_origin[0] * basis_u[i] + axis_origin[1] * basis_v[i] for i in range(3))
+    axis_origin_3d = tuple(
+        plane_origin[i] + axis_origin[0] * basis_u[i] + axis_origin[1] * basis_v[i]
+        for i in range(3)
+    )
 
     cell_corners = {
         cell: (
@@ -759,12 +825,12 @@ def validate_recipe(recipe: Mapping[str, Any] | Any) -> dict[str, Any]:
     if version in {RECIPE_VERSION_V05, RECIPE_VERSION_V06} and "profile" in recipe["object"]:
         validate_profile(recipe["object"]["profile"])
     has_root_generated_part = any("geometry" in part for part in recipe["object"]["parts"])
-    has_component_stack = any(
-        part.get("geometry", {}).get("type") == "raster_stack"
+    has_component_generated_part = any(
+        "geometry" in part
         for component in recipe["object"].get("components", {}).values()
         for part in component.get("parts", [])
     )
-    if version == RECIPE_VERSION_V06 and (has_root_generated_part or has_component_stack):
+    if version == RECIPE_VERSION_V06 and (has_root_generated_part or has_component_generated_part):
         if "profile" not in recipe["object"]:
             raise RecipeError("Generated raster geometry requires object.profile.")
 
@@ -1310,11 +1376,18 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
             exposed_anchors[f"{instance['id']}.{name}"] = endpoint
         if "connection" in instance:
             connection = instance["connection"]
-            source_part, source_anchor = exposed_anchors[f"{instance['id']}.{connection['anchor']}"]
+            exposed_endpoint = exposed_anchors.get(f"{instance['id']}.{connection['anchor']}")
+            if exposed_endpoint is None:
+                raise RecipeError(f"Unknown exposed anchor: {instance['id']}.{connection['anchor']}")
+            source_part, source_anchor = exposed_endpoint
             target = connection["target"]
             copied = {"id": f"{instance['id']}.connection", "part": source_part, "anchor": source_anchor, "target": target, "mode": connection.get("mode", "position")}
             if "offset" in connection:
                 copied["offset"] = _v03_vector(connection["offset"], scopes, {}, f"{instance['id']}.connection.offset")
+            if "rotation_offset" in connection:
+                copied["rotation_offset"] = connection["rotation_offset"]
+            if "offset_space" in connection:
+                copied["offset_space"] = connection["offset_space"]
             flat_connections.append(copied)
     for replication in obj.get("replications", []):
         if replication["count"] > MAX_V03_REPLICATION:
@@ -1355,10 +1428,12 @@ def _flatten_v03_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) 
     for part in flat_parts:
         if "geometry" not in part or "_generated_mesh" in part:
             continue
-        if part["geometry"].get("type") != "raster_stack":
-            raise RecipeError("Only raster_stack geometry is supported inside components.")
-        vertices, faces, edges = _build_raster_stack_mesh(obj["profile"], part["geometry"])
-        part["type"] = "RasterStack"
+        vertices, faces, edges = _build_raster_operation_mesh(obj["profile"], part["geometry"])
+        part["type"] = {
+            "raster_stack": "RasterStack",
+            "raster_revolution": "RasterRevolution",
+            "raster_torus": "RasterTorus",
+        }[part["geometry"]["type"]]
         part["parameters"] = {}
         part["_generated_mesh"] = (vertices, faces, edges)
     connected_ids = {connection["part"] for connection in flat_connections}

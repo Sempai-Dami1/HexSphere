@@ -692,6 +692,194 @@ def v06_recipe(profile, parts, connections=None):
     }
 
 
+def phase5d_unicode_profile():
+    character = "\N{LATIN CAPITAL LETTER A}"
+    font = ImageFont.load_default()
+    left, top, right, bottom = font.getbbox(character)
+    image = Image.new("1", (right - left, bottom - top), 0)
+    ImageDraw.Draw(image).text((-left, -top), character, font=font, fill=1)
+    return {
+        "type": "raster",
+        "width": image.width,
+        "height": image.height,
+        "data": [
+            int(image.getpixel((column, row)) != 0)
+            for row in range(image.height)
+            for column in range(image.width)
+        ],
+    }
+
+
+def phase5d_pyramid_recipe():
+    profile = phase5d_unicode_profile()
+    stack_parts = []
+    for plane in ("xy", "yz", "zx"):
+        geometry = {
+            "type": "raster_stack",
+            "profile": "object.profile",
+            "layer_count": 3,
+            "depth": 1.5,
+            "cell_size": [0.2, 0.2],
+            "construction_plane": plane,
+        }
+        if plane == "xy":
+            geometry["evolution"] = {
+                "model": "original_profile",
+                "interpolation": "linear",
+                "shift": {"start": [0.0, 0.0], "end": [0.2, 0.0]},
+            }
+        stack_parts.append({
+            "id": f"stack_{plane}",
+            "geometry": geometry,
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, 0.0, -0.75],
+                "local_rotation": [13.0, 7.0, 9.0],
+            }],
+        })
+
+    revolution = {
+        "parameters": {},
+        "parts": [{
+            "id": "revolution",
+            "geometry": {
+                **revolution_geometry(
+                    construction_plane="yz",
+                    angular_segments=16,
+                    axis={"origin": [-1.0, 0.0], "direction": [0.0, 1.0]},
+                ),
+                "type": "raster_revolution",
+            },
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, 0.0, 0.0],
+                "local_rotation": [8.0, 11.0, 5.0],
+            }],
+        }],
+        "exposes": [{"name": "mount", "source": "revolution.mount"}],
+    }
+    clipping_column = profile["width"] // 2
+    torus = {
+        "parameters": {},
+        "parts": [{
+            "id": "ring",
+            "geometry": {
+                **torus_geometry(
+                    construction_plane="xz",
+                    angular_segments=16,
+                    axis_mode="clip_axis",
+                    clipping={"side": "right", "axis_column": clipping_column},
+                ),
+                "type": "raster_torus",
+            },
+            "anchors": [
+                {
+                    "name": "mount",
+                    "parent": "main",
+                    "local_position": [0.0, 0.0, 0.0],
+                    "local_rotation": [12.0, 6.0, 3.0],
+                },
+                {
+                    "name": "private_anchor",
+                    "parent": "main",
+                    "local_position": [0.0, 0.2, 0.0],
+                },
+            ],
+        }],
+        "exposes": [{"name": "mount", "source": "ring.mount"}],
+    }
+    stack_component = {
+        "parameters": {},
+        "parts": stack_parts,
+        "exposes": [{"name": "mount", "source": "stack_xy.mount"}],
+    }
+    assembly_component = {
+        "parameters": {},
+        "parts": [],
+        "instances": [
+            {"id": "body", "component": "stack_set"},
+            {
+                "id": "crest",
+                "component": "raster_revolution",
+                "transform": {
+                    "position": [0.0, 2.5, 0.0],
+                    "rotation": [9.0, 17.0, 4.0],
+                },
+            },
+        ],
+        "exposes": [{"name": "mount", "source": "body.mount"}],
+    }
+    value = v06_recipe(profile, [phase2_cube("cube", size=4.0, anchors=[
+        {
+            "name": "apex_socket",
+            "parent": "main",
+            "local_position": [0.0, 2.0, 0.0],
+            "local_rotation": [0.0, 15.0, 0.0],
+        },
+        {
+            "name": "north_east",
+            "parent": "main",
+            "local_position": [2.0, -2.0, 2.0],
+            "local_rotation": [0.0, 5.0, 0.0],
+        },
+        {
+            "name": "north_west",
+            "parent": "main",
+            "local_position": [-2.0, -2.0, 2.0],
+            "local_rotation": [0.0, -5.0, 0.0],
+        },
+        {
+            "name": "south_east",
+            "parent": "main",
+            "local_position": [2.0, -2.0, -2.0],
+            "local_rotation": [0.0, 10.0, 0.0],
+        },
+        {
+            "name": "south_west",
+            "parent": "main",
+            "local_position": [-2.0, -2.0, -2.0],
+            "local_rotation": [0.0, -10.0, 0.0],
+        },
+    ])])
+    value["object"]["components"] = {
+        "stack_set": stack_component,
+        "raster_revolution": revolution,
+        "raster_torus": torus,
+        "upper_assembly": assembly_component,
+    }
+    value["object"]["instances"] = [{
+        "id": "crown",
+        "component": "upper_assembly",
+        "transform": {"rotation": [17.0, 11.0, 6.0]},
+        "connection": {
+            "anchor": "mount",
+            "target": {"part": "cube", "anchor": "apex_socket"},
+            "mode": "snap",
+            "rotation_offset": [7.0, 11.0, 13.0],
+            "offset_space": "target",
+        },
+    }]
+    for instance_id, anchor_name in (
+        ("north_east", "north_east"),
+        ("north_west", "north_west"),
+        ("south_east", "south_east"),
+        ("south_west", "south_west"),
+    ):
+        value["object"]["instances"].append({
+            "id": f"torus_{instance_id}",
+            "component": "raster_torus",
+            "connection": {
+                "anchor": "mount",
+                "target": {"part": "cube", "anchor": anchor_name},
+                "mode": "snap",
+                "rotation_offset": [0.0, 15.0, 0.0],
+            },
+        })
+    return value
+
+
 def assert_closed_triangle_mesh(part):
     edge_use = {}
     signed_volume = 0.0
@@ -1489,6 +1677,485 @@ def torus_geometry(**overrides):
     return geometry
 
 
+def explicit_plane(origin=(0.0, 0.0, 0.0), x_axis=(1.0, 0.0, 0.0), y_axis=(0.0, 1.0, 0.0)):
+    return {
+        "origin": list(origin),
+        "x_axis": list(x_axis),
+        "y_axis": list(y_axis),
+    }
+
+
+@pytest.mark.parametrize("operation", ["stack", "revolution", "torus"])
+def test_v06_explicit_identity_plane_matches_legacy_xy(operation):
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    if operation == "stack":
+        legacy_part = stack_evolution_part(layer_count=3)
+        explicit_part = copy.deepcopy(legacy_part)
+        explicit_part["geometry"]["plane"] = explicit_plane()
+    elif operation == "revolution":
+        legacy_part = raster_operation_part(
+            operation,
+            **revolution_geometry(axis={"origin": [-1.0, 0.0], "direction": [0.0, 1.0]}),
+        )
+        explicit_part = copy.deepcopy(legacy_part)
+        explicit_part["geometry"].pop("construction_plane")
+        explicit_part["geometry"]["plane"] = explicit_plane()
+    else:
+        legacy_part = raster_operation_part(
+            operation,
+            **torus_geometry(axis_mode="clip_axis", clipping={"side": "right", "axis_column": 1}),
+        )
+        explicit_part = copy.deepcopy(legacy_part)
+        explicit_part["geometry"].pop("construction_plane")
+        explicit_part["geometry"]["plane"] = explicit_plane()
+
+    legacy = object_recipe.build_recipe_parts(
+        v06_recipe(profile, [legacy_part]), streamlit_app.OBJECT_REGISTRY
+    )[0]
+    explicit = object_recipe.build_recipe_parts(
+        v06_recipe(profile, [explicit_part]), streamlit_app.OBJECT_REGISTRY
+    )[0]
+
+    assert explicit.vertices == legacy.vertices
+    assert explicit.faces == legacy.faces
+    assert explicit.edges == legacy.edges
+
+
+def test_v06_unicode_stack_legacy_vs_explicit_xy_smoke():
+    profile = phase5d_unicode_profile()
+    stack = stack_evolution_part(
+        layer_count=4,
+        evolution={
+            "shift": {"start": [0.0, 0.0], "end": [0.2, 0.1]},
+            "rotation_degrees": {"start": 0.0, "end": 20.0},
+            "scale": {"start": [1.0, 1.0], "end": [1.2, 0.8]},
+        },
+        construction_plane="xy",
+    )
+    stack["geometry"]["cell_size"] = [0.2, 0.2]
+    stack["transform"] = {"rotation": [10.0, 5.0, 15.0]}
+    stack["anchors"] = [{
+        "name": "mount",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [11.0, 7.0, 5.0],
+    }]
+    base = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [13.0, 17.0, 19.0],
+    }])
+    connection = [{
+        "id": "stack-snap",
+        "part": "stack",
+        "anchor": "mount",
+        "target": {"part": "base", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [7.0, 11.0, 13.0],
+    }]
+    legacy_recipe = v06_recipe(profile, [stack, base], connection)
+    explicit_recipe = copy.deepcopy(legacy_recipe)
+    explicit_geometry = explicit_recipe["object"]["parts"][0]["geometry"]
+    explicit_geometry.pop("construction_plane")
+    explicit_geometry["plane"] = explicit_plane(
+        origin=(0.0, 0.0, 0.0),
+        x_axis=(1.0, 0.0, 0.0),
+        y_axis=(0.0, 1.0, 0.0),
+    )
+
+    legacy_without_plane_form = copy.deepcopy(legacy_recipe)
+    explicit_without_plane_form = copy.deepcopy(explicit_recipe)
+    legacy_without_plane_form["object"]["parts"][0]["geometry"].pop("construction_plane")
+    explicit_without_plane_form["object"]["parts"][0]["geometry"].pop("plane")
+    assert legacy_without_plane_form == explicit_without_plane_form
+
+    legacy_parts = object_recipe.build_recipe_parts(legacy_recipe, streamlit_app.OBJECT_REGISTRY)
+    explicit_parts = object_recipe.build_recipe_parts(explicit_recipe, streamlit_app.OBJECT_REGISTRY)
+    legacy_stack, legacy_base = legacy_parts
+    explicit_stack, explicit_base = explicit_parts
+    max_vertex_difference = max(
+        abs(legacy_value - explicit_value)
+        for legacy_vertex, explicit_vertex in zip(legacy_stack.vertices, explicit_stack.vertices)
+        for legacy_value, explicit_value in zip(legacy_vertex, explicit_vertex)
+    )
+
+    print(f"maximum vertex-coordinate difference: {max_vertex_difference:.12g}")
+    assert max_vertex_difference <= 1e-9
+    assert legacy_stack.faces == explicit_stack.faces
+    assert legacy_stack.edges == explicit_stack.edges
+    assert legacy_base.vertices == explicit_base.vertices
+    assert legacy_base.faces == explicit_base.faces
+    assert legacy_base.edges == explicit_base.edges
+
+    legacy_combined = object_recipe.combine_recipe_parts(legacy_parts)
+    explicit_combined = object_recipe.combine_recipe_parts(explicit_parts)
+    for legacy_values, explicit_values in zip(legacy_combined, explicit_combined):
+        assert legacy_values == explicit_values
+    legacy_figure = streamlit_app.build_plotly_figure(*legacy_combined, angles=(0, 0, 0))
+    explicit_figure = streamlit_app.build_plotly_figure(*explicit_combined, angles=(0, 0, 0))
+    for figure in (legacy_figure, explicit_figure):
+        trace = figure.data[0]
+        assert trace.type == "mesh3d"
+        assert len(trace.x) == len(legacy_combined[0])
+        assert len(trace.i) == len(legacy_combined[1])
+        assert max(max(trace.i), max(trace.j), max(trace.k)) < len(legacy_combined[0])
+
+
+def test_v06_explicit_plane_maps_stack_axes_origin_and_depth():
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 0]}
+    part = stack_evolution_part(layer_count=3)
+    part["geometry"].update({
+        "depth": 2.0,
+        "plane": explicit_plane(
+            origin=(1.0, 2.0, 3.0),
+            x_axis=(1.0, 0.0, 0.0),
+            y_axis=(0.0, 0.0, 4.0),
+        ),
+    })
+    mesh = object_recipe.build_recipe_parts(
+        v06_recipe(profile, [part]), streamlit_app.OBJECT_REGISTRY
+    )[0]
+    bounds = tuple(
+        (min(vertex[axis] for vertex in mesh.vertices), max(vertex[axis] for vertex in mesh.vertices))
+        for axis in range(3)
+    )
+
+    for actual, expected in zip(bounds, ((1.0, 2.0), (0.0, 2.0), (3.0, 4.0))):
+        assert actual == pytest.approx(expected)
+    assert_closed_triangle_mesh(mesh)
+
+
+def test_v06_explicit_plane_maps_asymmetric_raster_x_y_and_stack_normal():
+    profile_data = phase5d_unicode_profile()
+    profile = object_recipe.load_profile(profile_data)
+    occupied = list(profile.iter_occupied_cells())
+    geometry = stack_evolution_part(layer_count=4)["geometry"]
+    geometry.update({
+        "depth": 3.0,
+        "cell_size": [0.25, 0.5],
+        "plane": explicit_plane(
+            origin=(1.0, 4.0, 2.0),
+            x_axis=(2.0, 0.0, 0.0),
+            y_axis=(0.0, 0.0, 3.0),
+        ),
+    })
+    vertices, faces, edges = object_recipe._build_raster_operation_mesh(profile_data, geometry)
+    column_bounds = (min(column for column, _ in occupied), max(column for column, _ in occupied) + 1)
+    row_bounds = (min(row for _, row in occupied), max(row for _, row in occupied) + 1)
+    expected_x = (1.0 + column_bounds[0] * 0.25, 1.0 + column_bounds[1] * 0.25)
+    expected_z = (
+        2.0 + (profile.height - row_bounds[1]) * 0.5,
+        2.0 + (profile.height - row_bounds[0]) * 0.5,
+    )
+    bounds = tuple(
+        (min(vertex[axis] for vertex in vertices), max(vertex[axis] for vertex in vertices))
+        for axis in range(3)
+    )
+
+    assert bounds[0] == pytest.approx(expected_x)
+    assert bounds[1] == pytest.approx((1.0, 4.0))
+    assert bounds[2] == pytest.approx(expected_z)
+    assert_closed_triangle_mesh(object_recipe.RecipePartMesh("explicit", "RasterStack", vertices, faces, edges))
+
+
+@pytest.mark.parametrize("operation", ["revolution", "torus"])
+def test_v06_explicit_plane_translates_rotational_mesh_in_local_xyz(operation):
+    profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
+    if operation == "revolution":
+        geometry = revolution_geometry(
+            construction_plane="xz",
+            axis={"origin": [-1.0, 0.0], "direction": [0.0, 1.0]},
+        )
+    else:
+        geometry = torus_geometry(
+            construction_plane="xz",
+            axis_mode="clip_axis",
+            clipping={"side": "right", "axis_column": 1},
+        )
+    legacy = raster_operation_part(operation, **geometry)
+    explicit = copy.deepcopy(legacy)
+    explicit["geometry"].pop("construction_plane")
+    explicit["geometry"]["plane"] = explicit_plane(
+        origin=(2.0, 3.0, 4.0),
+        x_axis=(3.0, 0.0, 0.0),
+        y_axis=(0.0, 0.0, 2.0),
+    )
+    legacy_mesh = object_recipe.build_recipe_parts(
+        v06_recipe(profile, [legacy]), streamlit_app.OBJECT_REGISTRY
+    )[0]
+    explicit_mesh = object_recipe.build_recipe_parts(
+        v06_recipe(profile, [explicit]), streamlit_app.OBJECT_REGISTRY
+    )[0]
+
+    assert explicit_mesh.faces == legacy_mesh.faces
+    assert explicit_mesh.edges == legacy_mesh.edges
+    for shifted, original in zip(explicit_mesh.vertices, legacy_mesh.vertices):
+        assert shifted == pytest.approx(tuple(original[axis] + (2.0, 3.0, 4.0)[axis] for axis in range(3)))
+    assert_valid_rotational_mesh(explicit_mesh)
+
+
+@pytest.mark.parametrize(
+    "plane",
+    [
+        {"origin": [0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 1.0, 0.0]},
+        {"origin": [0.0, 0.0, 0.0], "x_axis": [0.0, 0.0, 0.0], "y_axis": [0.0, 1.0, 0.0]},
+        {"origin": [0.0, 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [2.0, 0.0, 0.0]},
+        {"origin": [0.0, 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [1.0, 1.0, 0.0]},
+        {"origin": [float("nan"), 0.0, 0.0], "x_axis": [1.0, 0.0, 0.0], "y_axis": [0.0, 1.0, 0.0]},
+    ],
+)
+def test_v06_explicit_plane_rejects_malformed_or_invalid_basis(plane):
+    part = stack_evolution_part()
+    part["geometry"]["plane"] = plane
+    with pytest.raises(object_recipe.RecipeError):
+        object_recipe.build_recipe_parts(
+            v06_recipe({"type": "raster", "width": 1, "height": 1, "data": [1]}, [part]),
+            streamlit_app.OBJECT_REGISTRY,
+        )
+
+
+def test_v06_explicit_plane_rejects_legacy_plane_conflict():
+    part = stack_evolution_part(construction_plane="xy")
+    part["geometry"]["plane"] = explicit_plane()
+
+    with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
+        object_recipe.validate_recipe(
+            v06_recipe({"type": "raster", "width": 1, "height": 1, "data": [1]}, [part])
+        )
+
+
+def test_v06_unicode_explicit_plane_stack_snaps_and_reaches_plotly():
+    profile = phase5d_unicode_profile()
+    stack = stack_evolution_part(
+        layer_count=4,
+        evolution={
+            "shift": {"start": [0.0, 0.0], "end": [0.2, 0.1]},
+            "rotation_degrees": {"start": 0.0, "end": 20.0},
+            "scale": {"start": [1.0, 1.0], "end": [1.2, 0.8]},
+        },
+    )
+    stack["geometry"].update({
+        "depth": 3.0,
+        "cell_size": [0.2, 0.2],
+        "plane": explicit_plane(
+            origin=(0.0, 4.0, 0.0),
+            x_axis=(1.0, 0.0, 0.0),
+            y_axis=(0.0, 0.0, 1.0),
+        ),
+    })
+    stack["transform"] = {"rotation": [10.0, 5.0, 15.0]}
+    stack["anchors"] = [{
+        "name": "mount",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [11.0, 7.0, 5.0],
+    }]
+    target = phase2_cube("target", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [13.0, 17.0, 19.0],
+    }])
+    value = v06_recipe(profile, [stack, target], [{
+        "id": "unicode-stack-snap",
+        "part": "stack",
+        "anchor": "mount",
+        "target": {"part": "target", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [7.0, 11.0, 13.0],
+    }])
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    generated = first[0]
+    combined = object_recipe.combine_recipe_parts(first)
+    figure = streamlit_app.build_plotly_figure(*combined, angles=(0, 0, 0))
+
+    assert any(profile["data"])
+    assert generated.vertices == second[0].vertices
+    assert generated.faces == second[0].faces
+    assert generated.edges == second[0].edges
+    assert_closed_triangle_mesh(generated)
+    assert all(math.isfinite(value) for vertex in combined[0] for value in vertex)
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+    assert figure.data[0].type == "mesh3d"
+    assert len(figure.data[0].x) == len(combined[0])
+    assert len(figure.data[0].i) == len(combined[1])
+
+
+def test_v06_unicode_tilted_plane_stack_orientation_snap_smoke():
+    profile = phase5d_unicode_profile()
+    axis_component = math.sqrt(0.5)
+    x_axis = (axis_component, 0.0, axis_component)
+    y_axis = (0.0, 1.0, 0.0)
+    normal = (-axis_component, 0.0, axis_component)
+    origin = (1.25, -0.75, 2.5)
+    stack = stack_evolution_part(
+        layer_count=4,
+        evolution={
+            "shift": {"start": [0.0, 0.0], "end": [0.18, -0.08]},
+            "rotation_degrees": {"start": 0.0, "end": 16.0},
+            "scale": {"start": [1.0, 1.0], "end": [1.15, 0.85]},
+        },
+    )
+    stack["geometry"].update({
+        "depth": 2.4,
+        "cell_size": [0.2, 0.2],
+        "plane": explicit_plane(origin=origin, x_axis=x_axis, y_axis=y_axis),
+    })
+    local_vertices, local_faces, local_edges = object_recipe._build_raster_operation_mesh(
+        profile, stack["geometry"]
+    )
+    vertices_per_layer = len(local_vertices) // stack["geometry"]["layer_count"]
+    xy_geometry = copy.deepcopy(stack["geometry"])
+    xy_geometry.pop("plane")
+    xy_geometry["construction_plane"] = "xy"
+    xy_vertices, _, _ = object_recipe._build_raster_operation_mesh(profile, xy_geometry)
+    zero_origin_geometry = copy.deepcopy(stack["geometry"])
+    zero_origin_geometry["plane"]["origin"] = [0.0, 0.0, 0.0]
+    zero_origin_vertices, _, _ = object_recipe._build_raster_operation_mesh(profile, zero_origin_geometry)
+    no_evolution_geometry = copy.deepcopy(stack["geometry"])
+    no_evolution_geometry.pop("evolution")
+    no_evolution_vertices, _, _ = object_recipe._build_raster_operation_mesh(profile, no_evolution_geometry)
+    stack["anchors"] = [{
+        "name": "mount",
+        "parent": "main",
+        "local_position": list(local_vertices[0]),
+        "local_rotation": [17.0, -9.0, 12.0],
+    }]
+    stack["transform"] = {
+        "rotation": [13.0, 21.0, -8.0],
+        "scale": [1.0, 1.0, 1.0],
+    }
+    base = phase2_cube(
+        "base",
+        size=3.0,
+        transform={
+            "position": [2.0, -1.0, 3.0],
+            "rotation": [11.0, 17.0, -8.0],
+            "scale": [1.0, 1.0, 1.0],
+        },
+        anchors=[{
+            "name": "socket",
+            "parent": "main",
+            "local_position": [0.5, 0.75, -0.25],
+            "local_rotation": [9.0, -13.0, 7.0],
+        }],
+    )
+    connection = {
+        "id": "tilted-stack-snap",
+        "part": "stack",
+        "anchor": "mount",
+        "target": {"part": "base", "anchor": "socket"},
+        "mode": "snap",
+        "rotation_offset": [8.0, -6.0, 14.0],
+        "offset": [0.2, -0.1, 0.3],
+        "offset_space": "target",
+    }
+    value = v06_recipe(profile, [stack, base], [connection])
+    first = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    snapped_stack, built_base = first
+    built_stack_again, built_base_again = second
+
+    target_vertices, _, _ = streamlit_app.OBJECT_REGISTRY["SimpleBlock"]["generator"](base["parameters"])
+    target_anchor = object_recipe._resolve_v04_local_anchors(base, target_vertices)["socket"]
+    target_transform = {
+        "position": base["transform"]["position"],
+        "rotation": object_recipe._rotation_matrix(base["transform"]["rotation"]),
+        "scale": base["transform"]["scale"],
+    }
+    target_world = object_recipe._v04_anchor_world(target_anchor, target_transform)
+    offset_world = object_recipe._matrix_vector(target_world.rotation, connection["offset"])
+    expected_anchor_position = tuple(
+        target_world.position[axis] + offset_world[axis]
+        for axis in range(3)
+    )
+    source_anchor = object_recipe._resolve_v04_local_anchors(stack, local_vertices)["mount"]
+    source_rotation = object_recipe._rotation_matrix(stack["transform"]["rotation"])
+    rotation_offset = object_recipe._rotation_matrix(connection["rotation_offset"])
+    target_plus_offset_rotation = object_recipe._matrix_multiply(target_world.rotation, rotation_offset)
+    source_current_rotation = object_recipe._matrix_multiply(source_rotation, source_anchor.rotation)
+    result_rotation = object_recipe._matrix_multiply(
+        object_recipe._matrix_multiply(
+            target_plus_offset_rotation,
+            object_recipe._matrix_transpose(source_current_rotation),
+        ),
+        source_rotation,
+    )
+    aligned_source_anchor_rotation = object_recipe._matrix_multiply(result_rotation, source_anchor.rotation)
+    normal_coordinates = [
+        sum((vertex[axis] - origin[axis]) * normal[axis] for axis in range(3))
+        for vertex in local_vertices
+    ]
+    u_coordinates = [
+        sum((vertex[axis] - origin[axis]) * x_axis[axis] for axis in range(3))
+        for vertex in local_vertices
+    ]
+    v_coordinates = [
+        sum((vertex[axis] - origin[axis]) * y_axis[axis] for axis in range(3))
+        for vertex in local_vertices
+    ]
+    sample_index = next(
+        index for index, vertex in enumerate(local_vertices[1:], start=1)
+        if vertex != local_vertices[0]
+    )
+    local_edge = tuple(local_vertices[sample_index][axis] - local_vertices[0][axis] for axis in range(3))
+    expected_world_edge = object_recipe._matrix_vector(result_rotation, local_edge)
+    actual_world_edge = tuple(
+        snapped_stack.vertices[sample_index][axis] - snapped_stack.vertices[0][axis]
+        for axis in range(3)
+    )
+
+    raster_profile = object_recipe.load_profile(profile)
+    assert isinstance(raster_profile, object_recipe.RasterProfile)
+    assert any(raster_profile.data)
+    assert local_vertices and local_faces and local_edges
+    assert all(math.isfinite(value) for vertex in local_vertices for value in vertex)
+    assert all(0 <= index < len(local_vertices) for face in local_faces for index in face)
+    assert min(normal_coordinates) == pytest.approx(0.0)
+    assert max(normal_coordinates) == pytest.approx(stack["geometry"]["depth"])
+    assert local_vertices != xy_vertices
+    assert local_vertices != no_evolution_vertices
+    assert all(
+        tuple(local[axis] - zero[axis] for axis in range(3)) == pytest.approx(origin)
+        for local, zero in zip(local_vertices, zero_origin_vertices)
+    )
+    assert any(
+        tuple(local[axis] - xy[axis] for axis in range(3))
+        != tuple(local_vertices[0][axis] - xy_vertices[0][axis] for axis in range(3))
+        for local, xy in zip(local_vertices[1:], xy_vertices[1:])
+    )
+    assert max(u_coordinates) > min(u_coordinates)
+    assert max(v_coordinates) > min(v_coordinates)
+    assert snapped_stack.vertices[0] == pytest.approx(expected_anchor_position)
+    for actual_row, expected_row in zip(aligned_source_anchor_rotation, target_plus_offset_rotation):
+        assert actual_row == pytest.approx(expected_row, abs=1e-9)
+    assert actual_world_edge == pytest.approx(expected_world_edge, abs=1e-9)
+    assert snapped_stack.vertices == built_stack_again.vertices
+    assert snapped_stack.faces == built_stack_again.faces
+    assert snapped_stack.edges == built_stack_again.edges
+    assert built_base.vertices == built_base_again.vertices
+    assert built_base.faces == built_base_again.faces
+    assert built_base.edges == built_base_again.edges
+
+    combined = object_recipe.combine_recipe_parts(first)
+    assert combined[0] and combined[1] and combined[2]
+    assert all(0 <= index < len(combined[0]) for face in combined[1] for index in face)
+    assert all(0 <= index < len(combined[0]) for edge in combined[2] for index in edge)
+    assert all(math.isfinite(value) for vertex in combined[0] for value in vertex)
+    figure = streamlit_app.build_plotly_figure(*combined, angles=(0, 0, 0))
+    trace = figure.data[0]
+    assert trace.type == "mesh3d"
+    assert len(trace.x) == len(combined[0])
+    assert len(trace.i) == len(combined[1])
+    assert max(max(trace.i), max(trace.j), max(trace.k)) < len(combined[0])
+
+    print(f"plane normal: {normal}")
+    print(f"representative local coordinates: {local_vertices[0]}, {local_vertices[vertices_per_layer]}")
+    print(f"representative snapped coordinates: {snapped_stack.vertices[0]}, {snapped_stack.vertices[sample_index]}")
+
+
 def test_v06_raster_revolution_full_asymmetric_profile_and_seam():
     profile = {"type": "raster", "width": 2, "height": 2, "data": [1, 0, 1, 1]}
     part = build_raster_operation(
@@ -1692,6 +2359,156 @@ def test_v06_raster_torus_rejects_invalid_axis_parameters(geometry):
     profile = {"type": "raster", "width": 2, "height": 1, "data": [1, 1]}
     with pytest.raises(object_recipe.RecipeError, match="Invalid recipe structure"):
         object_recipe.validate_recipe(v06_recipe(profile, [raster_operation_part("torus", **geometry)]))
+
+
+def test_v06_nested_mixed_raster_pyramid_is_deterministic_and_reaches_plotly():
+    value = phase5d_pyramid_recipe()
+    first_parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    second_parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    expected_ids = [
+        "cube",
+        "crown.body.stack_xy",
+        "crown.body.stack_yz",
+        "crown.body.stack_zx",
+        "crown.crest.revolution",
+        "torus_north_east.ring",
+        "torus_north_west.ring",
+        "torus_south_east.ring",
+        "torus_south_west.ring",
+    ]
+
+    assert [part.part_id for part in first_parts] == expected_ids
+    assert [
+        (part.vertices, part.faces, part.edges)
+        for part in first_parts
+    ] == [
+        (part.vertices, part.faces, part.edges)
+        for part in second_parts
+    ]
+
+    parts_by_id = {part.part_id: part for part in first_parts}
+    profile = value["object"]["profile"]
+    stack_definitions = {
+        part["id"]: part
+        for part in value["object"]["components"]["stack_set"]["parts"]
+    }
+    stack_axes = {"stack_xy": 2, "stack_yz": 0, "stack_zx": 1}
+    for name, axis in stack_axes.items():
+        definition = stack_definitions[name]
+        vertices, _, _ = object_recipe._build_raster_operation_mesh(profile, definition["geometry"])
+        extent = max(vertex[axis] for vertex in vertices) - min(vertex[axis] for vertex in vertices)
+        assert extent == pytest.approx(1.5)
+        assert_closed_triangle_mesh(parts_by_id[f"crown.body.{name}"])
+
+    generated_parts = [part for part in first_parts if part.object_type.startswith("Raster")]
+    assert {part.object_type for part in generated_parts} == {"RasterStack", "RasterRevolution", "RasterTorus"}
+    for part in generated_parts:
+        assert_valid_rotational_mesh(part)
+
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    crown_connection = next(
+        connection for connection in flattened["object"]["connections"]
+        if connection["id"] == "crown.connection"
+    )
+    assert crown_connection["part"] == "crown.body.stack_xy"
+    assert crown_connection["rotation_offset"] == [7.0, 11.0, 13.0]
+    assert crown_connection["offset_space"] == "target"
+
+    changed_recipe = copy.deepcopy(value)
+    changed_recipe["object"]["components"]["upper_assembly"]["instances"][1]["transform"]["position"] = [
+        0.0, 3.5, 0.0,
+    ]
+    changed_parts = object_recipe.build_recipe_parts(changed_recipe, streamlit_app.OBJECT_REGISTRY)
+    changed_by_id = {part.part_id: part for part in changed_parts}
+    assert changed_by_id["crown.crest.revolution"].vertices != parts_by_id["crown.crest.revolution"].vertices
+    for part_id in expected_ids:
+        if part_id != "crown.crest.revolution":
+            assert changed_by_id[part_id].vertices == parts_by_id[part_id].vertices
+
+    vertices, faces, edges = object_recipe.combine_recipe_parts(first_parts)
+    assert vertices and faces and edges
+    assert all(math.isfinite(value) for vertex in vertices for value in vertex)
+    assert all(0 <= index < len(vertices) for face in faces for index in face)
+    assert all(0 <= index < len(vertices) for edge in edges for index in edge)
+    figure = streamlit_app.build_plotly_figure(vertices, faces, edges, angles=(0, 0, 0))
+    mesh_trace = figure.data[0]
+    assert mesh_trace.type == "mesh3d"
+    assert len(mesh_trace.x) == len(vertices)
+    assert len(mesh_trace.i) == len(faces)
+    assert max(max(mesh_trace.i), max(mesh_trace.j), max(mesh_trace.k)) < len(vertices)
+
+
+@pytest.mark.parametrize(
+    "instance_id, anchor",
+    [("crown", "crest.mount"), ("torus_north_east", "private_anchor"), ("crown", "missing_mount")],
+)
+def test_v06_component_connections_reject_private_or_missing_exposed_anchors(instance_id, anchor):
+    value = phase5d_pyramid_recipe()
+    instance = next(item for item in value["object"]["instances"] if item["id"] == instance_id)
+    instance["connection"]["anchor"] = anchor
+
+    with pytest.raises(object_recipe.RecipeError, match="exposed anchor"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_nested_component_cycle_fails_deterministically():
+    value = phase5d_pyramid_recipe()
+    value["object"]["components"]["stack_set"]["instances"] = [{
+        "id": "cycle",
+        "component": "upper_assembly",
+    }]
+    failures = []
+
+    for _ in range(2):
+        with pytest.raises(object_recipe.RecipeError) as error:
+            object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+        failures.append(str(error.value))
+
+    assert failures[0] == failures[1]
+    assert "Component nesting exceeds" in failures[0]
+
+
+def test_v06_mixed_recipe_rejects_unknown_component_and_connection_target():
+    unknown_component = phase5d_pyramid_recipe()
+    unknown_component["object"]["instances"][0]["component"] = "missing_component"
+    unknown_target = phase5d_pyramid_recipe()
+    unknown_target["object"]["connections"] = [{
+        "id": "missing-target",
+        "part": "crown",
+        "anchor": "mount",
+        "target": {"part": "missing_part", "anchor": "mount"},
+        "mode": "snap",
+    }]
+
+    for value in (unknown_component, unknown_target):
+        with pytest.raises(object_recipe.RecipeError):
+            object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_mixed_recipe_rejects_cyclic_instance_connections():
+    value = phase5d_pyramid_recipe()
+    instances = {item["id"]: item for item in value["object"]["instances"]}
+    instances["crown"].pop("connection")
+    instances["torus_north_east"].pop("connection")
+    value["object"]["connections"] = [
+        {
+            "id": "crown-to-ring",
+            "part": "crown.mount",
+            "anchor": "mount",
+            "target": {"part": "torus_north_east.mount", "anchor": "mount"},
+            "mode": "snap",
+        },
+        {
+            "id": "ring-to-crown",
+            "part": "torus_north_east.mount",
+            "anchor": "mount",
+            "target": {"part": "crown.mount", "anchor": "mount"},
+            "mode": "snap",
+        },
+    ]
+
+    with pytest.raises(object_recipe.RecipeError, match="cycle"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
 
 
 def test_v06_raster_torus_joins_primitive_recipe_assembly():
