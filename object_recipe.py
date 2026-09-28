@@ -57,6 +57,54 @@ class RecipePartMesh:
 
 
 @dataclass(frozen=True)
+class EvaluatedAnchor:
+    """A resolved anchor frame in assembly/world coordinates."""
+
+    name: str
+    position: tuple[float, float, float]
+    rotation: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+
+
+@dataclass(frozen=True)
+class EvaluatedPart:
+    """Final transform and anchor frames for one evaluated part."""
+
+    part_id: str
+    position: tuple[float, float, float]
+    rotation: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    scale: tuple[float, float, float]
+    anchors: tuple[EvaluatedAnchor, ...]
+
+
+@dataclass(frozen=True)
+class EvaluatedConnection:
+    """A solved connection with both endpoint frames retained."""
+
+    connection_id: str
+    part_id: str
+    anchor: str
+    target_part_id: str
+    target_anchor: str
+    mode: str
+    offset: tuple[float, float, float]
+    offset_space: str
+    rotation_offset: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    source: EvaluatedAnchor
+    target: EvaluatedAnchor
+
+
+@dataclass(frozen=True)
+class EvaluatedRecipe:
+    """The evaluated v0.6 assembly consumed by Object Package export."""
+
+    name: str
+    source_recipe_version: str
+    parts: tuple[RecipePartMesh, ...]
+    evaluated_parts: tuple[EvaluatedPart, ...]
+    connections: tuple[EvaluatedConnection, ...]
+
+
+@dataclass(frozen=True)
 class RasterProfile:
     """Validated raster: columns increase along X, top-down rows map to +Y."""
 
@@ -2491,7 +2539,7 @@ def _v04_connection_vector(value: Any, location: str) -> list[float]:
     return [float(item) for item in value]
 
 
-def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
+def _build_v04_evaluated(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> EvaluatedRecipe:
     flattened = _flatten_v03_recipe(recipe, registry)
     _validate_v02_relationships(flattened)
     part_definitions = {part["id"]: part for part in flattened["object"]["parts"]}
@@ -2512,6 +2560,7 @@ def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
 
     connections = {connection["part"]: connection for connection in flattened["object"].get("connections", [])}
     world_transforms: dict[str, dict[str, Any]] = {}
+    resolved_offsets: dict[str, tuple[float, float, float]] = {}
     for part_id in _part_order(flattened):
         part = part_definitions[part_id]
         explicit = part.get("transform", {})
@@ -2544,12 +2593,34 @@ def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
                 offset = list(_matrix_vector(target_world.rotation, offset))
             position = [target_world.position[index] + offset[index] - source_position[index] for index in range(3)]
             part_rotation = result_rotation
+            resolved_offsets[connection["id"]] = tuple(offset)
         world_transforms[part_id] = {"position": position, "rotation": part_rotation, "scale": scale}
 
     result = []
+    evaluated_parts = []
+    anchors_by_part: dict[str, dict[str, EvaluatedAnchor]] = {}
     for part in flattened["object"]["parts"]:
         data = local_data[part["id"]]
         transform = world_transforms[part["id"]]
+        evaluated_anchors = tuple(
+            EvaluatedAnchor(
+                name,
+                world_anchor.position,
+                world_anchor.rotation,
+            )
+            for name, anchor in sorted(data["anchors"].items())
+            for world_anchor in (_v04_anchor_world(anchor, transform),)
+        )
+        anchors_by_part[part["id"]] = {anchor.name: anchor for anchor in evaluated_anchors}
+        evaluated_parts.append(
+            EvaluatedPart(
+                part_id=part["id"],
+                position=tuple(transform["position"]),
+                rotation=tuple(tuple(row) for row in transform["rotation"]),
+                scale=tuple(transform["scale"]),
+                anchors=evaluated_anchors,
+            )
+        )
         result.append(
             RecipePartMesh(
                 part_id=part["id"],
@@ -2559,7 +2630,47 @@ def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
                 edges=data["edges"],
             )
         )
-    return result
+
+    evaluated_connections = []
+    for connection in flattened["object"].get("connections", []):
+        source = anchors_by_part[connection["part"]].get(connection["anchor"])
+        target = anchors_by_part[connection["target"]["part"]].get(connection["target"]["anchor"])
+        if source is None or target is None:
+            raise RecipeError(f"Connection references an unresolved evaluated anchor: {connection['id']}")
+        evaluated_connections.append(
+            EvaluatedConnection(
+                connection_id=connection["id"],
+                part_id=connection["part"],
+                anchor=connection["anchor"],
+                target_part_id=connection["target"]["part"],
+                target_anchor=connection["target"]["anchor"],
+                mode=connection["mode"],
+                offset=resolved_offsets.get(connection["id"], (0.0, 0.0, 0.0)),
+                offset_space=connection.get("offset_space", "target"),
+                rotation_offset=tuple(tuple(row) for row in _rotation_matrix(connection.get("rotation_offset", [0.0, 0.0, 0.0]))),
+                source=source,
+                target=target,
+            )
+        )
+    return EvaluatedRecipe(
+        name=recipe["object"]["name"],
+        source_recipe_version=recipe["version"],
+        parts=tuple(result),
+        evaluated_parts=tuple(evaluated_parts),
+        connections=tuple(evaluated_connections),
+    )
+
+
+def _build_v04_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
+    return list(_build_v04_evaluated(recipe, registry).parts)
+
+
+def build_evaluated_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> EvaluatedRecipe:
+    """Evaluate a v0.6 recipe once for lossless Object Package export."""
+    checked_recipe = validate_recipe(recipe)
+    if checked_recipe["version"] != RECIPE_VERSION_V06:
+        raise RecipeError("Object Package evaluation requires recipe version 0.6.")
+    return _build_v04_evaluated(checked_recipe, registry)
 
 
 def build_recipe_parts(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> list[RecipePartMesh]:
