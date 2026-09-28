@@ -1794,7 +1794,7 @@ def test_v06_component_rejects_malformed_local_raster_profile_with_path():
         (
             {"type": "raster_stack", "profile": "glyph", "layer_count": 2, "depth": {"$ref": "component.parameters.depth"}},
             {"depth": -1},
-            "depth is outside",
+            "invalid resolved raster_stack geometry.*depth",
         ),
         (
             {
@@ -1805,7 +1805,7 @@ def test_v06_component_rejects_malformed_local_raster_profile_with_path():
                 "axis": {"origin": [-1, 0], "direction": [0, 1]},
             },
             {"segments": 2},
-            "Angular segment count",
+            "invalid resolved raster_revolution geometry.*angular_segments",
         ),
         (
             {
@@ -1818,7 +1818,7 @@ def test_v06_component_rejects_malformed_local_raster_profile_with_path():
                 "axis_offset": {"$ref": "component.parameters.offset"},
             },
             {"offset": 0},
-            "axis_offset",
+            "invalid resolved raster_torus geometry.*axis_offset",
         ),
     ],
 )
@@ -2857,7 +2857,7 @@ def test_v06_nested_component_cycle_fails_deterministically():
         failures.append(str(error.value))
 
     assert failures[0] == failures[1]
-    assert "Component nesting exceeds" in failures[0]
+    assert "Component graph contains a cycle:" in failures[0]
 
 
 def test_v06_mixed_recipe_rejects_unknown_component_and_connection_target():
@@ -3741,3 +3741,733 @@ def test_v06_unicode_raster_torus_clips_and_assembles_with_primitive(side):
     assert len(faces) == sum(len(part.faces) for part in parts)
     assert len(edges) == sum(len(part.edges) for part in parts)
     assert all(0 <= index < len(vertices) for face in faces for index in face)
+
+
+# Phase 5G aggregate assembly resource safety.
+def aggregate_budget_recipe(parts):
+    value = v06_recipe(None, parts)
+    value["object"].pop("profile")
+    return value
+
+
+@pytest.mark.parametrize(
+    "resource, limit_name, sequence_name",
+    [
+        ("vertices", "MAX_ASSEMBLY_VERTICES", "vertices"),
+        ("faces", "MAX_ASSEMBLY_FACES", "faces"),
+        ("edges", "MAX_ASSEMBLY_EDGES", "edges"),
+    ],
+)
+def test_v06_phase5g_aggregate_limits_are_inclusive_and_shared_by_build_apis(
+    monkeypatch, resource, limit_name, sequence_name
+):
+    value = aggregate_budget_recipe([phase2_cube("first"), phase2_cube("second")])
+    baseline = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    sequence_names = ("vertices", "faces", "edges")
+    limit_names = ("MAX_ASSEMBLY_VERTICES", "MAX_ASSEMBLY_FACES", "MAX_ASSEMBLY_EDGES")
+    resource_totals = {
+        name: sum(len(getattr(part, name)) for part in baseline)
+        for name in sequence_names
+    }
+    total = resource_totals[sequence_name]
+    for name, count_name in zip(limit_names, sequence_names):
+        if name != limit_name:
+            monkeypatch.setattr(object_recipe, name, resource_totals[count_name] + 1)
+    monkeypatch.setattr(object_recipe, limit_name, total + 1)
+    below_budget_parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert sum(len(getattr(part, sequence_name)) for part in below_budget_parts) == total
+    monkeypatch.setattr(object_recipe, limit_name, total)
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert sum(len(getattr(part, sequence_name)) for part in parts) == total
+    separate_parts = object_recipe.build_recipe_geometry(
+        value, streamlit_app.OBJECT_REGISTRY, combine=False
+    )
+    assert sum(len(getattr(part, sequence_name)) for part in separate_parts) == total
+    combined = object_recipe.build_recipe_geometry(value, streamlit_app.OBJECT_REGISTRY, combine=True)
+    assert len(combined[0 if resource == "vertices" else 1 if resource == "faces" else 2]) == total
+
+    monkeypatch.setattr(object_recipe, limit_name, total - 1)
+    failures = []
+    for build in (
+        lambda: object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY),
+        lambda: object_recipe.build_recipe_geometry(value, streamlit_app.OBJECT_REGISTRY, combine=False),
+        lambda: object_recipe.build_recipe_geometry(value, streamlit_app.OBJECT_REGISTRY, combine=True),
+    ):
+        with pytest.raises(object_recipe.RecipeError, match=f"[Aa]ggregate {resource}.*{total}.*{total - 1}") as error:
+            build()
+        failures.append(str(error.value))
+    assert len(set(failures)) == 1
+
+
+def test_v06_phase5g_counts_nested_instances_and_replication_with_paths(monkeypatch):
+    value = aggregate_budget_recipe([phase2_cube("root")])
+    block_component = {
+        "parameters": {},
+        "parts": [{
+            "id": "block",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 1.0, "thickness": 1},
+        }],
+        "exposes": [],
+    }
+    nested_component = {
+        "parameters": {},
+        "parts": [],
+        "instances": [{"id": "inner", "component": "block_component"}],
+        "exposes": [],
+    }
+    value["object"]["components"] = {
+        "block_component": block_component,
+        "nested_component": nested_component,
+    }
+    value["object"]["instances"] = [
+        {"id": "instance_a", "component": "nested_component"},
+        {"id": "instance_b", "component": "nested_component"},
+    ]
+    value["object"]["replications"] = [{
+        "id": "tiles",
+        "component": "block_component",
+        "count": 2,
+        "pattern": "linear",
+        "step": [2.0, 0.0, 0.0],
+    }]
+    per_part_vertices = len(
+        object_recipe.build_recipe_parts(
+            aggregate_budget_recipe([phase2_cube("one")]),
+            streamlit_app.OBJECT_REGISTRY,
+        )[0].vertices
+    )
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", per_part_vertices * 4)
+
+    with pytest.raises(object_recipe.RecipeError, match=r"[Aa]ggregate vertices.*40.*32.*tiles\[1\]") as first_error:
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    with pytest.raises(object_recipe.RecipeError) as second_error:
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert str(first_error.value) == str(second_error.value)
+
+
+def test_v06_phase5g_counts_generated_meshes_with_primitives(monkeypatch):
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    stack = {
+        "id": "generated_stack",
+        "geometry": {
+            "type": "raster_stack",
+            "profile": "object.profile",
+            "layer_count": 2,
+            "depth": 1.0,
+        },
+    }
+    value = v06_recipe(profile, [phase2_cube("base"), stack])
+    per_stack = object_recipe.build_recipe_parts(v06_recipe(profile, [stack]), streamlit_app.OBJECT_REGISTRY)[0]
+    per_cube = object_recipe.build_recipe_parts(aggregate_budget_recipe([phase2_cube("base")]), streamlit_app.OBJECT_REGISTRY)[0]
+    total_vertices = len(per_stack.vertices) + len(per_cube.vertices)
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", total_vertices - 1)
+
+    with pytest.raises(object_recipe.RecipeError, match="[Aa]ggregate vertices"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5g_generated_replication_counts_each_mesh_and_reports_index(monkeypatch):
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["components"] = {
+        "Glyph": {
+            "parameters": {},
+            "profiles": {"glyph": profile},
+            "parts": [{
+                "id": "stack",
+                "geometry": {
+                    "type": "raster_stack",
+                    "profile": "glyph",
+                    "layer_count": 2,
+                    "depth": 1,
+                },
+            }],
+            "exposes": [],
+        },
+    }
+    value["object"]["replications"] = [{
+        "id": "glyph_tiles",
+        "component": "Glyph",
+        "count": 3,
+        "pattern": "linear",
+        "step": [2.0, 0.0, 0.0],
+    }]
+    per_stack_vertices = len(object_recipe.build_recipe_parts(
+        v06_recipe(profile, [{
+            "id": "stack",
+            "geometry": {
+                "type": "raster_stack",
+                "profile": "object.profile",
+                "layer_count": 2,
+                "depth": 1,
+            },
+        }]),
+        streamlit_app.OBJECT_REGISTRY,
+    )[0].vertices)
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", per_stack_vertices * 2)
+
+    with pytest.raises(
+        object_recipe.RecipeError,
+        match=r"[Aa]ggregate vertices.*24.*16.*glyph_tiles\[2\]",
+    ):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5g_mixed_pyramid_counts_all_generated_operation_types(monkeypatch):
+    value = phase5d_pyramid_recipe()
+    baseline = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    totals = {
+        "vertices": sum(len(part.vertices) for part in baseline),
+        "faces": sum(len(part.faces) for part in baseline),
+        "edges": sum(len(part.edges) for part in baseline),
+    }
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", totals["vertices"])
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_FACES", totals["faces"])
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_EDGES", totals["edges"])
+
+    exact_budget_parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    assert [(part.vertices, part.faces, part.edges) for part in exact_budget_parts] == [
+        (part.vertices, part.faces, part.edges) for part in baseline
+    ]
+
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", totals["vertices"] - 1)
+    with pytest.raises(
+        object_recipe.RecipeError,
+        match=rf"[Aa]ggregate vertices.*{totals['vertices']}.*{totals['vertices'] - 1}",
+    ):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5g_raw_combiner_remains_version_agnostic(monkeypatch):
+    parts = object_recipe.build_recipe_parts(
+        aggregate_budget_recipe([phase2_cube("first"), phase2_cube("second")]),
+        streamlit_app.OBJECT_REGISTRY,
+    )
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", 1)
+
+    vertices, faces, edges = object_recipe.combine_recipe_parts(parts)
+
+    assert len(vertices) == sum(len(part.vertices) for part in parts)
+    assert len(faces) == sum(len(part.faces) for part in parts)
+    assert len(edges) == sum(len(part.edges) for part in parts)
+
+
+def test_v06_phase5g_aggregate_limit_does_not_change_v05_recipe_behavior(monkeypatch):
+    value = v04_recipe([phase2_cube("legacy")], [])
+    value["version"] = "0.5"
+    value["object"]["profile"] = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", 1)
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+    assert len(parts) == 1
+    assert len(parts[0].vertices) > 1
+
+
+# Phase 5H evaluation-boundary hardening.
+def test_v06_phase5h_invalid_root_connection_rejects_before_raster_materialization(monkeypatch):
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    generated = component_raster_stack_part("stack", "object.profile")
+    value = v06_recipe(profile, [generated])
+    value["object"]["connections"] = [{
+        "id": "stack-to-missing",
+        "part": "stack",
+        "anchor": "mount",
+        "target": {"part": "missing", "anchor": "socket"},
+        "mode": "snap",
+    }]
+
+    def forbidden_materialization(*args, **kwargs):
+        pytest.fail("Invalid root connection reached raster materialization")
+
+    monkeypatch.setattr(object_recipe, "_build_raster_operation_mesh", forbidden_materialization)
+    with pytest.raises(object_recipe.RecipeError, match="unknown target part.*missing"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+@pytest.mark.parametrize(
+    "connection, message",
+    [
+        (
+            {"id": "missing-source-anchor", "part": "stack", "anchor": "missing", "target": {"part": "base", "anchor": "socket"}, "mode": "snap"},
+            "source anchor 'missing'",
+        ),
+        (
+            {"id": "missing-target-anchor", "part": "stack", "anchor": "mount", "target": {"part": "base", "anchor": "missing"}, "mode": "snap"},
+            "target anchor 'missing'",
+        ),
+    ],
+)
+def test_v06_phase5h_missing_direct_anchor_rejects_before_raster_materialization(
+    monkeypatch, connection, message
+):
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    stack = component_raster_stack_part("stack", "object.profile")
+    stack["anchors"] = [{"name": "mount", "parent": "main", "local_position": [0, 0, 0]}]
+    base = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0, 0, 0],
+    }])
+    value = v06_recipe(profile, [stack, base], [connection])
+
+    def forbidden_materialization(*args, **kwargs):
+        pytest.fail("Invalid direct anchor reached raster materialization")
+
+    monkeypatch.setattr(object_recipe, "_build_raster_operation_mesh", forbidden_materialization)
+    with pytest.raises(object_recipe.RecipeError, match=message):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+@pytest.mark.parametrize(
+    "anchors, transform, message",
+    [
+        ([], {"scale": [1.0, 0.0, 1.0]}, "scale cannot contain zero"),
+        (
+            [
+                {"name": "first", "parent": "second", "local_position": [0, 0, 0]},
+                {"name": "second", "parent": "first", "local_position": [0, 0, 0]},
+            ],
+            {},
+            "Anchor hierarchy contains a cycle",
+        ),
+    ],
+)
+def test_v06_phase5h_literal_transform_and_anchor_errors_precede_mesh_build(
+    monkeypatch, anchors, transform, message
+):
+    part = component_raster_stack_part("stack", "object.profile")
+    if anchors:
+        part["anchors"] = anchors
+    if transform:
+        part["transform"] = transform
+    value = v06_recipe({"type": "raster", "width": 1, "height": 1, "data": [1]}, [part])
+
+    def forbidden_materialization(*args, **kwargs):
+        pytest.fail("Invalid transform or anchor hierarchy reached raster materialization")
+
+    monkeypatch.setattr(object_recipe, "_build_raster_operation_mesh", forbidden_materialization)
+    with pytest.raises(object_recipe.RecipeError, match=message):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+@pytest.mark.parametrize(
+    "component_part, parameters, message",
+    [
+        (
+            {
+                "id": "invalid_stack",
+                "geometry": {
+                    "type": "raster_stack",
+                    "profile": "glyph",
+                    "layer_count": 2,
+                    "depth": {"$ref": "component.parameters.depth"},
+                },
+            },
+            {"depth": -1.0},
+            "invalid resolved raster_stack geometry",
+        ),
+        (
+            {
+                "id": "empty_torus",
+                "geometry": {
+                    "type": "raster_torus",
+                    "profile": "glyph",
+                    "construction_plane": "xy",
+                    "angular_segments": 8,
+                    "axis_mode": "clip_axis",
+                    "clipping": {"side": "left", "axis_column": 0},
+                },
+            },
+            {},
+            "profile is empty after clipping",
+        ),
+    ],
+)
+def test_v06_phase5h_invalid_component_geometry_fails_before_root_mesh(
+    monkeypatch, component_part, parameters, message
+):
+    root_profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    value = v06_recipe(root_profile, [component_raster_stack_part("root_stack", "object.profile")])
+    value["object"]["components"] = {
+        "InvalidComponent": {
+            "parameters": parameters,
+            "profiles": {"glyph": root_profile},
+            "parts": [component_part],
+            "exposes": [],
+        },
+    }
+    value["object"]["instances"] = [{"id": "invalid", "component": "InvalidComponent"}]
+
+    def forbidden_materialization(*args, **kwargs):
+        pytest.fail("Invalid component geometry reached mesh materialization")
+
+    monkeypatch.setattr(object_recipe, "_build_raster_operation_mesh", forbidden_materialization)
+    with pytest.raises(object_recipe.RecipeError, match=message):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5h_expansion_limit_rejects_before_primitive_generation(monkeypatch):
+    value = aggregate_budget_recipe([])
+    leaf = {
+        "parameters": {},
+        "parts": [{
+            "id": "block",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 1.0, "thickness": 1},
+        }],
+        "exposes": [],
+    }
+    fanout = {
+        "parameters": {},
+        "parts": [],
+        "instances": [{"id": f"child_{index}", "component": "leaf"} for index in range(64)],
+        "exposes": [],
+    }
+    value["object"]["components"] = {"leaf": leaf, "fanout": fanout}
+    value["object"]["instances"] = [
+        {"id": f"batch_{index}", "component": "fanout"}
+        for index in range(5)
+    ]
+    registry = dict(streamlit_app.OBJECT_REGISTRY)
+    registry["SimpleBlock"] = dict(registry["SimpleBlock"])
+    generator_calls = []
+    original_generator = registry["SimpleBlock"]["generator"]
+
+    def counted_generator(parameters):
+        generator_calls.append(parameters)
+        return original_generator(parameters)
+
+    registry["SimpleBlock"]["generator"] = counted_generator
+
+    def forbidden_expansion(*args, **kwargs):
+        pytest.fail("Over-limit component graph reached recursive expansion")
+
+    monkeypatch.setattr(object_recipe, "_expand_v03_component", forbidden_expansion)
+    with pytest.raises(object_recipe.RecipeError, match="part limit"):
+        object_recipe.build_recipe_parts(value, registry)
+    assert generator_calls == []
+
+
+def test_v06_phase5h_unreferenced_component_template_does_not_consume_recipe_part_budget():
+    value = aggregate_budget_recipe([phase2_cube("root")])
+    leaf = {
+        "parameters": {},
+        "parts": [{
+            "id": f"block_{index}",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 1.0, "thickness": 1},
+        } for index in range(64)],
+        "exposes": [],
+    }
+    large_template = {
+        "parameters": {},
+        "parts": [],
+        "instances": [{"id": f"copy_{index}", "component": "leaf"} for index in range(5)],
+        "exposes": [],
+    }
+    value["object"]["components"] = {"leaf": leaf, "large_template": large_template}
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+    assert [part.part_id for part in parts] == ["root"]
+
+
+def test_v06_phase5h_nesting_depth_limit_rejects_before_raster_materialization(monkeypatch):
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    components = {}
+    for index in range(object_recipe.MAX_V03_COMPONENT_DEPTH + 1):
+        nested = [] if index == object_recipe.MAX_V03_COMPONENT_DEPTH else [{
+            "id": f"child_{index + 1}",
+            "component": f"level_{index + 1}",
+        }]
+        parts = [component_raster_stack_part("stack", "glyph")] if not nested else []
+        component = {
+            "parameters": {},
+            "parts": parts,
+            "instances": nested,
+            "exposes": [],
+        }
+        if parts:
+            component["profiles"] = {"glyph": {"type": "raster", "width": 1, "height": 1, "data": [1]}}
+        components[f"level_{index}"] = component
+    value["object"]["components"] = components
+    value["object"]["instances"] = [{"id": "root", "component": "level_0"}]
+
+    def forbidden_expansion(*args, **kwargs):
+        pytest.fail("Over-depth component graph reached recursive expansion")
+
+    monkeypatch.setattr(object_recipe, "_expand_v03_component", forbidden_expansion)
+    with pytest.raises(object_recipe.RecipeError, match="nesting exceeds.*level_8"):
+        object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+
+
+def test_v06_phase5h_duplicate_component_part_ids_reject_before_generation(monkeypatch):
+    value = aggregate_budget_recipe([])
+    value["object"]["components"] = {
+        "duplicate_parts": {
+            "parameters": {},
+            "parts": [
+                {"id": "same", "type": "SimpleBlock", "parameters": {"cube_size": 1, "thickness": 1}},
+                component_raster_stack_part("same", "glyph"),
+            ],
+            "profiles": {"glyph": {"type": "raster", "width": 1, "height": 1, "data": [1]}},
+            "exposes": [],
+        },
+    }
+    value["object"]["instances"] = [{"id": "duplicate", "component": "duplicate_parts"}]
+    calls = []
+    registry = dict(streamlit_app.OBJECT_REGISTRY)
+    registry["SimpleBlock"] = dict(registry["SimpleBlock"])
+    original_generator = registry["SimpleBlock"]["generator"]
+
+    def tracked_generator(parameters):
+        calls.append(parameters)
+        return original_generator(parameters)
+
+    registry["SimpleBlock"]["generator"] = tracked_generator
+    with pytest.raises(object_recipe.RecipeError, match="Component 'duplicate_parts'.*duplicate part or instance IDs"):
+        object_recipe.build_recipe_parts(value, registry)
+    assert calls == []
+
+
+def test_v06_phase5h_nested_instance_connection_snaps_through_parent_component():
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    source_component = {
+        "parameters": {},
+        "profiles": {"glyph": profile},
+        "parts": [{
+            "id": "stack",
+            "geometry": {
+                "type": "raster_stack",
+                "profile": "glyph",
+                "layer_count": 2,
+                "depth": 1.0,
+            },
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, 0.0, 0.0],
+                "local_rotation": [10.0, 20.0, 30.0],
+            }],
+        }],
+        "exposes": [{"name": "mount", "source": "stack.mount"}],
+    }
+    parent_component = {
+        "parameters": {},
+        "parts": [{
+            "id": "target",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 2.0, "thickness": 1},
+            "transform": {"rotation": [15.0, -8.0, 23.0]},
+            "anchors": [{
+                "name": "socket",
+                "parent": "main",
+                "local_position": [0.5, 0.25, -0.5],
+                "local_rotation": [-7.0, 11.0, 9.0],
+            }],
+        }],
+        "instances": [{
+            "id": "source",
+            "component": "source_component",
+            "parameters": {"twist": 8.0, "offset_x": 0.2},
+            "transform": {"rotation": [6.0, 17.0, -12.0]},
+            "connection": {
+                "anchor": "mount",
+                "target": {"part": "target", "anchor": "socket"},
+                "mode": "snap",
+                "offset": [{"$ref": "instance.parameters.offset_x"}, 0.0, 0.0],
+                "rotation_offset": [{"$ref": "instance.parameters.twist"}, -5.0, 13.0],
+            },
+        }],
+        "exposes": [{"name": "mount", "source": "source.mount"}],
+    }
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["components"] = {
+        "source_component": source_component,
+        "parent_component": parent_component,
+    }
+    value["object"]["instances"] = [{"id": "assembly", "component": "parent_component"}]
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    source_mesh = next(part for part in parts if part.part_id == "assembly.source.stack")
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    connections = flattened["object"]["connections"]
+    connection = next(connection for connection in connections if connection["id"].endswith("source.connection"))
+    assert connection["part"] == "assembly.source.stack"
+    assert connection["target"]["part"] == "assembly.target"
+    assert connection["mode"] == "snap"
+    assert connection["offset"] == pytest.approx([0.2, 0.0, 0.0])
+    assert connection["rotation_offset"] == pytest.approx([8.0, -5.0, 13.0])
+    flat_parts = {part["id"]: part for part in flattened["object"]["parts"]}
+    flat_target = flat_parts["assembly.target"]
+    target_vertices, _, _ = streamlit_app.OBJECT_REGISTRY["SimpleBlock"]["generator"](
+        flat_target["parameters"]
+    )
+    target_anchor = object_recipe._resolve_v04_local_anchors(flat_target, target_vertices)["socket"]
+    target_world = object_recipe._v04_anchor_world(target_anchor, {
+        "position": flat_target["transform"]["position"],
+        "rotation": flat_target["transform"]["_rotation_matrix"],
+        "scale": flat_target["transform"]["scale"],
+    })
+    world_offset = object_recipe._matrix_vector(target_world.rotation, connection["offset"])
+    expected_mount_position = tuple(
+        target_world.position[axis] + world_offset[axis]
+        for axis in range(3)
+    )
+    assert source_mesh.vertices[0] == pytest.approx(expected_mount_position)
+
+    flat_source = flat_parts["assembly.source.stack"]
+    source_vertices = flat_source["_generated_mesh"][0]
+    source_anchor = object_recipe._resolve_v04_local_anchors(flat_source, source_vertices)["mount"]
+    source_rotation = flat_source["transform"]["_rotation_matrix"]
+    rotation_offset = object_recipe._rotation_matrix(connection["rotation_offset"])
+    expected_anchor_frame = object_recipe._matrix_multiply(target_world.rotation, rotation_offset)
+    source_current_frame = object_recipe._matrix_multiply(source_rotation, source_anchor.rotation)
+    snapped_rotation = object_recipe._matrix_multiply(
+        object_recipe._matrix_multiply(
+            expected_anchor_frame,
+            object_recipe._matrix_transpose(source_current_frame),
+        ),
+        source_rotation,
+    )
+    aligned_frame = object_recipe._matrix_multiply(snapped_rotation, source_anchor.rotation)
+    for actual_row, expected_row in zip(aligned_frame, expected_anchor_frame):
+        assert actual_row == pytest.approx(expected_row, abs=1e-9)
+    local_edge = tuple(source_vertices[1][axis] - source_vertices[0][axis] for axis in range(3))
+    expected_world_edge = object_recipe._matrix_vector(snapped_rotation, local_edge)
+    actual_world_edge = tuple(source_mesh.vertices[1][axis] - source_mesh.vertices[0][axis] for axis in range(3))
+    assert actual_world_edge == pytest.approx(expected_world_edge, abs=1e-9)
+
+
+def test_v06_phase5h_component_connection_vectors_resolve_instance_scope():
+    component = {
+        "parameters": {"offset": 0.25, "twist": 10.0},
+        "parts": [
+            {
+                "id": "source",
+                "type": "SimpleBlock",
+                "parameters": {"cube_size": 1.0, "thickness": 1},
+                "anchors": [{
+                    "name": "mount",
+                    "parent": "main",
+                    "local_position": [0.0, 0.0, 0.0],
+                    "local_rotation": [5.0, 11.0, -7.0],
+                }],
+            },
+            {
+                "id": "target",
+                "type": "SimpleBlock",
+                "parameters": {"cube_size": 1.0, "thickness": 1},
+                "anchors": [{
+                    "name": "socket",
+                    "parent": "main",
+                    "local_position": [0.0, 0.0, 0.0],
+                    "local_rotation": [-8.0, 4.0, 12.0],
+                }],
+            },
+        ],
+        "connections": [{
+            "id": "snap",
+            "part": "source",
+            "anchor": "mount",
+            "target": {"part": "target", "anchor": "socket"},
+            "mode": "snap",
+            "offset": [{"$ref": "instance.parameters.offset"}, 0.0, 0.0],
+            "rotation_offset": [{"$ref": "instance.parameters.twist"}, 0.0, 0.0],
+        }],
+        "exposes": [],
+    }
+    value = v06_recipe(None, [])
+    value["object"].pop("profile")
+    value["object"]["components"] = {"SnappedPair": component}
+    value["object"]["instances"] = [
+        {"id": "first", "component": "SnappedPair", "parameters": {"offset": 0.25, "twist": 10.0}},
+        {"id": "second", "component": "SnappedPair", "parameters": {"offset": 0.75, "twist": 25.0}},
+    ]
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    flat_connections = {connection["id"]: connection for connection in flattened["object"]["connections"]}
+
+    assert flat_connections["first.snap"]["offset"] == pytest.approx([0.25, 0.0, 0.0])
+    assert flat_connections["first.snap"]["rotation_offset"] == pytest.approx([10.0, 0.0, 0.0])
+    assert flat_connections["second.snap"]["offset"] == pytest.approx([0.75, 0.0, 0.0])
+    assert flat_connections["second.snap"]["rotation_offset"] == pytest.approx([25.0, 0.0, 0.0])
+    built = {part.part_id: part for part in parts}
+    assert built["first.source"].vertices != built["second.source"].vertices
+
+
+def test_v06_phase5h_top_level_instance_connection_vectors_resolve_instance_scope():
+    profile = {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    component = {
+        "parameters": {"offset_x": 0.1, "twist": 5.0},
+        "profiles": {"glyph": profile},
+        "parts": [{
+            "id": "stack",
+            "geometry": {
+                "type": "raster_stack",
+                "profile": "glyph",
+                "layer_count": 2,
+                "depth": 1.0,
+            },
+            "anchors": [{
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, 0.0, 0.0],
+                "local_rotation": [4.0, 7.0, -9.0],
+            }],
+        }],
+        "exposes": [{"name": "mount", "source": "stack.mount"}],
+    }
+    base = phase2_cube("base", anchors=[{
+        "name": "socket",
+        "parent": "main",
+        "local_position": [0.0, 0.0, 0.0],
+        "local_rotation": [9.0, -11.0, 15.0],
+    }])
+    value = v06_recipe(None, [base])
+    value["object"].pop("profile")
+    value["object"]["components"] = {"Glyph": component}
+    value["object"]["instances"] = [{
+        "id": "glyph",
+        "component": "Glyph",
+        "parameters": {"offset_x": 0.4, "twist": 17.0},
+        "connection": {
+            "anchor": "mount",
+            "target": {"part": "base", "anchor": "socket"},
+            "mode": "snap",
+            "offset": [{"$ref": "instance.parameters.offset_x"}, 0.0, 0.0],
+            "rotation_offset": [{"$ref": "instance.parameters.twist"}, 0.0, 0.0],
+        },
+    }]
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    flattened = object_recipe._flatten_v03_recipe(value, streamlit_app.OBJECT_REGISTRY)
+    connection = next(item for item in flattened["object"]["connections"] if item["id"] == "glyph.connection")
+    assert connection["offset"] == pytest.approx([0.4, 0.0, 0.0])
+    assert connection["rotation_offset"] == pytest.approx([17.0, 0.0, 0.0])
+    assert next(part for part in parts if part.part_id == "glyph.stack").vertices
+
+
+def test_v06_phase5h_v06_primitive_generator_is_reused_after_counting(monkeypatch):
+    value = aggregate_budget_recipe([phase2_cube("base")])
+    registry = dict(streamlit_app.OBJECT_REGISTRY)
+    registry["SimpleBlock"] = dict(registry["SimpleBlock"])
+    calls = []
+    original_generator = registry["SimpleBlock"]["generator"]
+
+    def counted_generator(parameters):
+        calls.append(parameters)
+        return original_generator(parameters)
+
+    registry["SimpleBlock"]["generator"] = counted_generator
+    parts = object_recipe.build_recipe_parts(value, registry)
+
+    assert calls
+    assert len(calls) == 1
+    assert len(parts) == 1
+    assert len(parts[0].vertices) == len(object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)[0].vertices)
