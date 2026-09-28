@@ -323,6 +323,52 @@ def test_v03_reusable_component_instance_exposes_anchor():
     assert center_y == pytest.approx(3.0)
 
 
+def test_v03_nested_instance_connection_is_ignored_but_transform_is_applied():
+    child_component = {
+        "parameters": {},
+        "parts": [{
+            "id": "block",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 1.0, "thickness": 1},
+        }],
+        "exposes": [{"name": "mount", "source": "block.center"}],
+    }
+    parent_component = {
+        "parameters": {},
+        "parts": [{
+            "id": "target",
+            "type": "SimpleBlock",
+            "parameters": {"cube_size": 1.0, "thickness": 1},
+            "anchors": [{
+                "name": "socket",
+                "parent": "main",
+                "local_position": [0.0, 10.0, 0.0],
+            }],
+        }],
+        "instances": [{
+            "id": "source",
+            "component": "child",
+            "transform": {"position": [0.0, 2.0, 0.0]},
+            "connection": {
+                "anchor": "mount",
+                "target": {"part": "target", "anchor": "socket"},
+                "mode": "position",
+            },
+        }],
+        "exposes": [],
+    }
+    value = v03_recipe(
+        [],
+        components={"child": child_component, "parent": parent_component},
+        instances=[{"id": "assembly", "component": "parent"}],
+    )
+
+    parts = object_recipe.build_recipe_parts(value, streamlit_app.OBJECT_REGISTRY)
+    source = next(part for part in parts if part.part_id == "assembly.source.block")
+    center_y = sum(vertex[1] for vertex in source.vertices) / len(source.vertices)
+    assert center_y == pytest.approx(2.0)
+
+
 def test_v03_linear_replication_is_bounded_and_deterministic():
     value = v03_recipe(
         [],

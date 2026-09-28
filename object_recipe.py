@@ -1989,7 +1989,7 @@ def _expand_v03_component(
         parts.extend(nested_parts)
         connections.extend(nested_connections)
         nested_exposed.update({f"{nested['id']}.{name}": endpoint for name, endpoint in nested_anchors.items()})
-        if "connection" in nested:
+        if defer_connection_vectors and "connection" in nested:
             pending_instance_connections.append((nested, nested_anchors, nested_connection_scopes))
 
     direct_part_ids = {part["id"] for part in component.get("parts", [])}
