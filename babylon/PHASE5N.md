@@ -4,7 +4,14 @@
 
 Validation only. All recipes use the frozen v0.6 schema and existing operations. Each recipe is schema-validated, evaluated, exported twice, reloaded by the Python package loader, and read independently by `object_package_consumer`. The consumer's Plotly figure supplies the reference vertices, face indices, edges, and bounds. The same serialized package is uploaded independently to Babylon.
 
-The browser checks compare exact IDs, part order, face and edge index arrays, transform metadata, and evaluated anchor/connection positions. Vertex coordinates and bounds use an absolute tolerance of `1e-6`. Babylon mesh positions and rotations must be zero, and scales one, while the package transform is retained as metadata. The scene uses right-handed coordinates and consumes world-space XYZ without axis remapping.
+The browser checks compare exact IDs, part order, face and edge index arrays, transform metadata, and evaluated anchor/connection positions. Babylon-versus-Plotly vertex coordinates and bounds use an absolute tolerance of `1e-6`. Frozen-package cross-runtime numeric leaves use the centralized Python test tolerance `atol=1e-12`, `rtol=1e-12`; nonnumeric structure and topology remain exact. Babylon mesh positions and rotations must be zero, and scales one, while the package transform is retained as metadata. The scene uses right-handed coordinates and consumes world-space XYZ without axis remapping.
+
+## Python Environment
+
+- Original observed fixture-freeze environment: Python `3.11.1`. The complete dependency inventory for that run was not recorded.
+- Current environment: Python `3.14.7`, NumPy `2.4.6`, pandas `3.0.6`, Plotly `7.1.0`, jsonschema `4.26.0`, rpds-py `2026.6.3`, and pytest `9.1.1`.
+- The current full Python regression suite was verified with `\.venv\Scripts\python.exe -X utf8 -m pytest`.
+- The project declares Python `>=3.14`; the observed Python 3.11.1 freeze environment differs from that declared minimum. Its other package versions are unknown, so it is not treated as equivalent to the current runtime.
 
 ## Validation Ladder
 
