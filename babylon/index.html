@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HexSphere Object Package Viewer</title>
+  </head>
+  <body>
+    <main class="viewer-shell">
+      <header>
+        <h1>Object Package 1.0 viewer</h1>
+        <label>Load package <input id="package-input" type="file" accept="application/json,.json" /></label>
+        <button id="load-fixture" type="button">Load reference fixture</button>
+        <span id="status" role="status">Choose an Object Package JSON file.</span>
+      </header>
+      <canvas id="render-canvas" aria-label="Babylon object package view"></canvas>
+      <aside class="metadata-panel" aria-label="Package metadata">
+        <div class="display-controls">
+          <label><input id="show-axes" type="checkbox" checked /> World axes</label>
+          <label><input id="show-anchors" type="checkbox" checked /> Anchors</label>
+          <label><input id="show-connections" type="checkbox" checked /> Connections</label>
+        </div>
+        <section>
+          <h2>Parts</h2>
+          <ol id="part-list"></ol>
+        </section>
+        <section>
+          <h2>Spatial metadata</h2>
+          <ol id="spatial-list"></ol>
+        </section>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

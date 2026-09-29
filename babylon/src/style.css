@@ -1,0 +1,146 @@
+:root {
+  color: #e7edf0;
+  background: #10191e;
+  font-family: "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+.viewer-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(15rem, 20rem);
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.8rem 1.25rem;
+  padding: 0.85rem 1.25rem;
+  border-bottom: 1px solid #314047;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+label,
+#status,
+button {
+  font-size: 0.875rem;
+}
+
+button {
+  border: 1px solid #496069;
+  border-radius: 4px;
+  padding: 0.45rem 0.7rem;
+  color: #e7edf0;
+  background: #203139;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #2b424b;
+}
+
+#status {
+  flex: 1 1 14rem;
+  color: #a9bdc4;
+}
+
+#status[data-error="true"] {
+  color: #ff9e91;
+}
+
+#render-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 20rem;
+  touch-action: none;
+  outline: none;
+}
+
+.metadata-panel {
+  overflow: auto;
+  padding: 1rem 1.1rem;
+  border-left: 1px solid #314047;
+  background: #152127;
+}
+
+.display-controls {
+  display: grid;
+  gap: 0.55rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #314047;
+}
+
+.display-controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.metadata-panel section {
+  padding-top: 1rem;
+}
+
+.metadata-panel h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+
+.metadata-panel ol {
+  display: grid;
+  gap: 0.65rem;
+  margin: 0;
+  padding-left: 1.4rem;
+  color: #b8c8cd;
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+.metadata-panel li span {
+  display: block;
+  color: #82969d;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 700px) {
+  .viewer-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(24rem, 60vh) auto;
+  }
+
+  header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.65rem;
+    padding: 1rem;
+  }
+
+  #status {
+    flex-basis: auto;
+  }
+
+  .metadata-panel {
+    border-top: 1px solid #314047;
+    border-left: 0;
+  }
+}
