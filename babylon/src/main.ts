@@ -18,6 +18,7 @@ interface DebugPartState {
   type: string;
   positions: number[];
   indices: number[];
+  edges: [number, number][];
   position: number[];
   rotation: number[];
   scaling: number[];
@@ -135,6 +136,7 @@ function debugState(): ViewerDebugState {
         type: String(mesh.metadata.type),
         positions: Array.from(mesh.getVerticesData(VertexBuffer.PositionKind) ?? []),
         indices: [...(mesh.getIndices() ?? [])],
+        edges: mesh.metadata.edges as [number, number][],
         position: mesh.position.asArray(),
         rotation: mesh.rotation.asArray(),
         scaling: mesh.scaling.asArray(),

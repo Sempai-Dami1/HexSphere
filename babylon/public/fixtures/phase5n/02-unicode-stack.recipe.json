@@ -1,0 +1,147 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5N Unicode tilted stack",
+    "parameters": {
+      "layers": 5,
+      "depth": 1.2
+    },
+    "profile": {
+      "type": "raster",
+      "width": 5,
+      "height": 7,
+      "data": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        0,
+        0,
+        1,
+        0,
+        1,
+        1,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    "profiles": {},
+    "parts": [
+      {
+        "id": "unicode_stack",
+        "geometry": {
+          "type": "raster_stack",
+          "profile": "object.profile",
+          "layer_count": {
+            "$ref": "parameters.layers"
+          },
+          "depth": {
+            "$expr": {
+              "op": "mul",
+              "args": [
+                {
+                  "$ref": "parameters.depth"
+                },
+                1.5
+              ]
+            }
+          },
+          "cell_size": [
+            0.24,
+            0.39
+          ],
+          "plane": {
+            "origin": [
+              1.25,
+              -0.75,
+              2.5
+            ],
+            "x_axis": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "y_axis": [
+              0.8,
+              0.0,
+              0.6
+            ]
+          },
+          "evolution": {
+            "model": "original_profile",
+            "interpolation": "linear",
+            "shift": {
+              "start": [
+                0.0,
+                0.0
+              ],
+              "end": [
+                0.35,
+                -0.2
+              ]
+            },
+            "rotation_degrees": {
+              "start": 0.0,
+              "end": 21.0
+            },
+            "scale": {
+              "start": [
+                1.0,
+                1.0
+              ],
+              "end": [
+                0.82,
+                1.18
+              ]
+            }
+          }
+        },
+        "transform": {
+          "position": [
+            0.3,
+            -1.1,
+            0.65
+          ],
+          "rotation": [
+            9,
+            23,
+            14
+          ],
+          "scale": [
+            1.1,
+            0.85,
+            1.25
+          ]
+        }
+      }
+    ],
+    "components": {},
+    "instances": [],
+    "replications": [],
+    "connections": []
+  }
+}

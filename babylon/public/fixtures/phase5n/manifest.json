@@ -1,0 +1,181 @@
+{
+  "phase": "5N",
+  "format": "hexsphere.object-package",
+  "version": "1.0",
+  "source_recipe_version": "0.6",
+  "cases": [
+    {
+      "id": "01-primitives",
+      "label": "Multi-part primitive assembly",
+      "features": [
+        "primitive parts",
+        "different transforms",
+        "stable ordering"
+      ],
+      "recipe": "01-primitives.recipe.json",
+      "package": "01-primitives.package.json",
+      "reference": "01-primitives.plotly.json",
+      "counts": {
+        "parts": 3,
+        "connections": 0,
+        "vertices": 76,
+        "faces": 60,
+        "edges": 84
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "02-unicode-stack",
+      "label": "Unicode tilted evolved stack",
+      "features": [
+        "Unicode Ω raster",
+        "tilted plane",
+        "evolution",
+        "nonuniform transform"
+      ],
+      "recipe": "02-unicode-stack.recipe.json",
+      "package": "02-unicode-stack.package.json",
+      "reference": "02-unicode-stack.plotly.json",
+      "counts": {
+        "parts": 1,
+        "connections": 0,
+        "vertices": 255,
+        "faces": 480,
+        "edges": 720
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "03-clipped-revolution",
+      "label": "Clipped partial-profile revolution",
+      "features": [
+        "asymmetric profile",
+        "right-side clipping",
+        "YZ construction plane",
+        "transform"
+      ],
+      "recipe": "03-clipped-revolution.recipe.json",
+      "package": "03-clipped-revolution.package.json",
+      "reference": "03-clipped-revolution.plotly.json",
+      "counts": {
+        "parts": 1,
+        "connections": 0,
+        "vertices": 165,
+        "faces": 280,
+        "edges": 420
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "04-torus-clip-axis",
+      "label": "Torus clip-axis mode",
+      "features": [
+        "clip_axis",
+        "right-side clipping",
+        "transform"
+      ],
+      "recipe": "04-torus-clip-axis.recipe.json",
+      "package": "04-torus-clip-axis.package.json",
+      "reference": "04-torus-clip-axis.plotly.json",
+      "counts": {
+        "parts": 1,
+        "connections": 0,
+        "vertices": 149,
+        "faces": 252,
+        "edges": 378
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "05-torus-offset-axis",
+      "label": "Torus offset-from-profile mode",
+      "features": [
+        "offset_from_profile",
+        "axis side and offset",
+        "transform"
+      ],
+      "recipe": "05-torus-offset-axis.recipe.json",
+      "package": "05-torus-offset-axis.package.json",
+      "reference": "05-torus-offset-axis.plotly.json",
+      "counts": {
+        "parts": 1,
+        "connections": 0,
+        "vertices": 342,
+        "faces": 648,
+        "edges": 972
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "06-connected-nested",
+      "label": "Root and nested snapped assembly",
+      "features": [
+        "root connection",
+        "root instance.connection",
+        "nested instance.connection",
+        "oriented snap",
+        "anchors"
+      ],
+      "recipe": "06-connected-nested.recipe.json",
+      "package": "06-connected-nested.package.json",
+      "reference": "06-connected-nested.plotly.json",
+      "counts": {
+        "parts": 5,
+        "connections": 4,
+        "vertices": 330,
+        "faces": 612,
+        "edges": 900
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "07-mixed-assembly",
+      "label": "Mixed realistic assembly",
+      "features": [
+        "primitive",
+        "raster",
+        "revolution",
+        "torus",
+        "components",
+        "profiles",
+        "parameters",
+        "planes",
+        "evolution",
+        "connections"
+      ],
+      "recipe": "07-mixed-assembly.recipe.json",
+      "package": "07-mixed-assembly.package.json",
+      "reference": "07-mixed-assembly.plotly.json",
+      "counts": {
+        "parts": 6,
+        "connections": 3,
+        "vertices": 547,
+        "faces": 900,
+        "edges": 1350
+      },
+      "tolerance": 1e-06
+    },
+    {
+      "id": "08-zomball-candidate",
+      "label": "ZomBall spiked impact orb",
+      "features": [
+        "hex-sphere core",
+        "four snapped spike instances",
+        "torus collar",
+        "transforms",
+        "evaluated anchors"
+      ],
+      "recipe": "08-zomball-candidate.recipe.json",
+      "package": "08-zomball-candidate.package.json",
+      "reference": "08-zomball-candidate.plotly.json",
+      "counts": {
+        "parts": 6,
+        "connections": 5,
+        "vertices": 652,
+        "faces": 924,
+        "edges": 1368
+      },
+      "tolerance": 1e-06
+    }
+  ]
+}

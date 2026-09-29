@@ -1,0 +1,475 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5N mixed assembly",
+    "parameters": {
+      "layers": 4,
+      "depth": 1.4,
+      "segments": 16
+    },
+    "profile": {
+      "type": "raster",
+      "width": 5,
+      "height": 4,
+      "data": [
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        0
+      ]
+    },
+    "profiles": {
+      "shell": {
+        "type": "raster",
+        "width": 5,
+        "height": 4,
+        "data": [
+          0,
+          1,
+          1,
+          0,
+          0,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          1,
+          1,
+          0
+        ]
+      }
+    },
+    "parts": [
+      {
+        "id": "mixed_core",
+        "type": "SimpleHexShpere",
+        "parameters": {
+          "radius": 1.3,
+          "hex_subdivisions": 1,
+          "hex_size_pct": 84.0,
+          "thickness": 1
+        },
+        "transform": {
+          "position": [
+            1.0,
+            -0.5,
+            0.75
+          ],
+          "rotation": [
+            7,
+            21,
+            13
+          ],
+          "scale": [
+            1.1,
+            0.9,
+            1.2
+          ]
+        },
+        "anchors": [
+          {
+            "name": "mount",
+            "parent": "main",
+            "local_position": [
+              0.4,
+              0.2,
+              0.1
+            ],
+            "local_rotation": [
+              9,
+              15,
+              21
+            ]
+          }
+        ]
+      },
+      {
+        "id": "mixed_stack",
+        "geometry": {
+          "type": "raster_stack",
+          "profile": "object.profile",
+          "layer_count": {
+            "$ref": "parameters.layers"
+          },
+          "depth": {
+            "$expr": {
+              "op": "add",
+              "args": [
+                {
+                  "$ref": "parameters.depth"
+                },
+                0.4
+              ]
+            }
+          },
+          "cell_size": [
+            0.3,
+            0.47
+          ],
+          "construction_plane": "zx",
+          "evolution": {
+            "model": "original_profile",
+            "interpolation": "linear",
+            "shift": {
+              "start": [
+                0,
+                0
+              ],
+              "end": [
+                0.2,
+                -0.1
+              ]
+            },
+            "rotation_degrees": {
+              "start": 0,
+              "end": 14
+            },
+            "scale": {
+              "start": [
+                1,
+                1
+              ],
+              "end": [
+                0.9,
+                1.1
+              ]
+            }
+          }
+        },
+        "anchors": [
+          {
+            "name": "mount",
+            "parent": "main",
+            "local_position": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "transform": {
+          "position": [
+            -1,
+            0.5,
+            1.5
+          ],
+          "rotation": [
+            5,
+            12,
+            19
+          ],
+          "scale": [
+            1.2,
+            0.8,
+            1.0
+          ]
+        }
+      },
+      {
+        "id": "mixed_revolution",
+        "geometry": {
+          "type": "raster_revolution",
+          "profile": "shell",
+          "construction_plane": "xz",
+          "angular_segments": {
+            "$ref": "parameters.segments"
+          },
+          "axis": {
+            "origin": [
+              0.7,
+              0
+            ],
+            "direction": [
+              0,
+              1
+            ]
+          },
+          "cell_size": [
+            0.35,
+            0.5
+          ],
+          "clipping": {
+            "side": "right",
+            "axis_column": 2
+          }
+        },
+        "transform": {
+          "position": [
+            0.3,
+            1.2,
+            -0.7
+          ],
+          "rotation": [
+            23,
+            17,
+            31
+          ],
+          "scale": [
+            0.8,
+            1.25,
+            0.95
+          ]
+        }
+      },
+      {
+        "id": "mixed_torus_clip",
+        "geometry": {
+          "type": "raster_torus",
+          "profile": "shell",
+          "construction_plane": "xy",
+          "angular_segments": 14,
+          "axis_mode": "clip_axis",
+          "clipping": {
+            "side": "right",
+            "axis_column": 2
+          }
+        },
+        "transform": {
+          "position": [
+            2.5,
+            -1.0,
+            0.25
+          ],
+          "rotation": [
+            14,
+            7,
+            26
+          ],
+          "scale": [
+            1.1,
+            0.85,
+            1.2
+          ]
+        }
+      }
+    ],
+    "components": {
+      "support": {
+        "parameters": {
+          "layers": 3,
+          "depth": 1.1
+        },
+        "profiles": {
+          "mark": {
+            "type": "raster",
+            "width": 5,
+            "height": 7,
+            "data": [
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              0,
+              0,
+              1,
+              1,
+              1,
+              0,
+              1,
+              0,
+              1,
+              0,
+              1,
+              0,
+              0,
+              1,
+              0,
+              1,
+              1,
+              0,
+              1,
+              1,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "parts": [
+          {
+            "id": "support_block",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": {
+                "$ref": "component.parameters.depth"
+              },
+              "thickness": 1
+            },
+            "anchors": [
+              {
+                "name": "socket",
+                "parent": "main",
+                "local_position": [
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ]
+          },
+          {
+            "id": "support_mark",
+            "geometry": {
+              "type": "raster_stack",
+              "profile": "mark",
+              "layer_count": {
+                "$ref": "component.parameters.layers"
+              },
+              "depth": {
+                "$ref": "component.parameters.depth"
+              },
+              "cell_size": [
+                0.15,
+                0.22
+              ],
+              "plane": {
+                "origin": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "x_axis": [
+                  1,
+                  0,
+                  0
+                ],
+                "y_axis": [
+                  0,
+                  0.8,
+                  0.6
+                ]
+              }
+            },
+            "anchors": [
+              {
+                "name": "mount",
+                "parent": "main",
+                "local_position": [
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        ],
+        "connections": [
+          {
+            "id": "support_snap",
+            "part": "support_block",
+            "anchor": "socket",
+            "target": {
+              "part": "support_mark",
+              "anchor": "mount"
+            },
+            "mode": "snap"
+          }
+        ],
+        "exposes": [
+          {
+            "name": "mount",
+            "source": "support_mark.mount"
+          }
+        ]
+      }
+    },
+    "instances": [
+      {
+        "id": "side_support",
+        "component": "support",
+        "parameters": {
+          "layers": 4,
+          "depth": 0.9
+        },
+        "transform": {
+          "position": [
+            0,
+            2.0,
+            0.5
+          ],
+          "rotation": [
+            19,
+            5,
+            11
+          ],
+          "scale": [
+            0.9,
+            1.1,
+            1.2
+          ]
+        },
+        "connection": {
+          "anchor": "mount",
+          "target": {
+            "part": "mixed_core",
+            "anchor": "mount"
+          },
+          "mode": "snap",
+          "rotation_offset": [
+            3,
+            8,
+            12
+          ],
+          "offset_space": "target"
+        }
+      }
+    ],
+    "replications": [],
+    "connections": [
+      {
+        "id": "stack_to_core",
+        "part": "mixed_stack",
+        "anchor": "mount",
+        "target": {
+          "part": "mixed_core",
+          "anchor": "mount"
+        },
+        "mode": "snap",
+        "offset": [
+          0.05,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target",
+        "rotation_offset": [
+          7.0,
+          13.0,
+          19.0
+        ]
+      }
+    ]
+  }
+}

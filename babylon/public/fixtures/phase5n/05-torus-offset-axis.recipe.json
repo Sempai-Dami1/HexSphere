@@ -1,0 +1,119 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5N torus offset_from_profile",
+    "parameters": {},
+    "profile": {
+      "type": "raster",
+      "width": 5,
+      "height": 4,
+      "data": [
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        0
+      ]
+    },
+    "profiles": {
+      "torus_profile": {
+        "type": "raster",
+        "width": 5,
+        "height": 4,
+        "data": [
+          0,
+          1,
+          1,
+          0,
+          0,
+          1,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          1,
+          1,
+          0,
+          0,
+          0,
+          1,
+          1,
+          0
+        ]
+      }
+    },
+    "parts": [
+      {
+        "id": "torus_offset_from_profile",
+        "geometry": {
+          "type": "raster_torus",
+          "profile": "torus_profile",
+          "construction_plane": "xz",
+          "angular_segments": 18,
+          "cell_size": [
+            0.42,
+            0.73
+          ],
+          "axis_mode": "offset_from_profile",
+          "axis_side": "right",
+          "axis_offset": 1.35
+        },
+        "anchors": [
+          {
+            "name": "mount",
+            "parent": "main",
+            "local_position": [
+              0.15,
+              -0.2,
+              0.3
+            ],
+            "local_rotation": [
+              7,
+              11,
+              17
+            ]
+          }
+        ],
+        "transform": {
+          "position": [
+            -1.25,
+            0.75,
+            2.0
+          ],
+          "rotation": [
+            12,
+            26,
+            8
+          ],
+          "scale": [
+            1.2,
+            0.7,
+            1.1
+          ]
+        }
+      }
+    ],
+    "components": {},
+    "instances": [],
+    "replications": [],
+    "connections": []
+  }
+}

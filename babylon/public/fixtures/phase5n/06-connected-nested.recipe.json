@@ -1,0 +1,336 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5N connected nested assembly",
+    "parameters": {},
+    "profile": {
+      "type": "raster",
+      "width": 5,
+      "height": 4,
+      "data": [
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        1,
+        0
+      ]
+    },
+    "profiles": {},
+    "parts": [
+      {
+        "id": "root_target",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.25,
+          "thickness": 1
+        },
+        "transform": {
+          "position": [
+            2.0,
+            0.5,
+            -1.0
+          ],
+          "rotation": [
+            9,
+            17,
+            5
+          ]
+        },
+        "anchors": [
+          {
+            "name": "root_socket",
+            "parent": "main",
+            "local_position": [
+              0,
+              0.5,
+              0
+            ],
+            "local_rotation": [
+              3,
+              7,
+              11
+            ]
+          }
+        ]
+      },
+      {
+        "id": "root_source",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.25,
+          "thickness": 1
+        },
+        "transform": {
+          "position": [
+            -2.0,
+            1.0,
+            0.5
+          ],
+          "rotation": [
+            -5,
+            13,
+            29
+          ]
+        },
+        "anchors": [
+          {
+            "name": "root_mount",
+            "parent": "main",
+            "local_position": [
+              0,
+              0,
+              0
+            ],
+            "local_rotation": [
+              17,
+              23,
+              31
+            ]
+          }
+        ]
+      }
+    ],
+    "components": {
+      "glyph_component": {
+        "parameters": {
+          "layers": 3
+        },
+        "profiles": {
+          "glyph": {
+            "type": "raster",
+            "width": 5,
+            "height": 7,
+            "data": [
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1,
+              0,
+              0,
+              1,
+              1,
+              1,
+              0,
+              1,
+              0,
+              1,
+              0,
+              1,
+              0,
+              0,
+              1,
+              0,
+              1,
+              1,
+              0,
+              1,
+              1,
+              0,
+              0,
+              1,
+              1,
+              1,
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        "parts": [
+          {
+            "id": "stack",
+            "geometry": {
+              "type": "raster_stack",
+              "profile": "glyph",
+              "layer_count": {
+                "$ref": "component.parameters.layers"
+              },
+              "depth": 1.3,
+              "cell_size": [
+                0.22,
+                0.31
+              ],
+              "construction_plane": "yz"
+            },
+            "anchors": [
+              {
+                "name": "mount",
+                "parent": "main",
+                "local_position": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "local_rotation": [
+                  10,
+                  20,
+                  30
+                ]
+              }
+            ]
+          }
+        ],
+        "exposes": [
+          {
+            "name": "mount",
+            "source": "stack.mount"
+          }
+        ]
+      },
+      "nested_component": {
+        "parameters": {},
+        "profiles": {},
+        "parts": [
+          {
+            "id": "target",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": 1.25,
+              "thickness": 1
+            },
+            "transform": {
+              "position": [
+                0.4,
+                0.2,
+                -0.3
+              ],
+              "rotation": [
+                15,
+                -8,
+                23
+              ]
+            },
+            "anchors": [
+              {
+                "name": "socket",
+                "parent": "main",
+                "local_position": [
+                  0.5,
+                  0.25,
+                  -0.5
+                ],
+                "local_rotation": [
+                  -7,
+                  11,
+                  9
+                ]
+              }
+            ]
+          }
+        ],
+        "instances": [
+          {
+            "id": "child",
+            "component": "glyph_component",
+            "connection": {
+              "anchor": "mount",
+              "target": {
+                "part": "target",
+                "anchor": "socket"
+              },
+              "mode": "snap",
+              "offset": [
+                0.2,
+                0.0,
+                0.0
+              ],
+              "rotation_offset": [
+                8.0,
+                -5.0,
+                13.0
+              ],
+              "offset_space": "target"
+            }
+          }
+        ],
+        "exposes": [
+          {
+            "name": "mount",
+            "source": "target.socket"
+          }
+        ]
+      }
+    },
+    "instances": [
+      {
+        "id": "nested",
+        "component": "nested_component",
+        "connection": {
+          "anchor": "mount",
+          "target": {
+            "part": "root_target",
+            "anchor": "root_socket"
+          },
+          "mode": "snap",
+          "rotation_offset": [
+            4,
+            7,
+            12
+          ],
+          "offset_space": "target"
+        }
+      },
+      {
+        "id": "top_glyph",
+        "component": "glyph_component",
+        "connection": {
+          "anchor": "mount",
+          "target": {
+            "part": "root_target",
+            "anchor": "root_socket"
+          },
+          "mode": "snap",
+          "rotation_offset": [
+            11,
+            5,
+            19
+          ],
+          "offset_space": "target"
+        }
+      }
+    ],
+    "replications": [],
+    "connections": [
+      {
+        "id": "root_snap",
+        "part": "root_source",
+        "anchor": "root_mount",
+        "target": {
+          "part": "root_target",
+          "anchor": "root_socket"
+        },
+        "mode": "snap",
+        "offset": [
+          0.05,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target",
+        "rotation_offset": [
+          7.0,
+          13.0,
+          19.0
+        ]
+      }
+    ]
+  }
+}
