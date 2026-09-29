@@ -50,6 +50,25 @@ def _matrix(value: Any, path: str) -> tuple[tuple[float, float, float], tuple[fl
     return tuple(_vector(row, f"{path}[{index}]") for index, row in enumerate(value))  # type: ignore[return-value]
 
 
+def _rotation(value: Any, path: str) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    matrix = _matrix(value, path)
+    for row in matrix:
+        if abs(math.sqrt(sum(component * component for component in row)) - 1.0) > 1e-9:
+            raise _error(path, "rotation rows must be unit length")
+    for left in range(3):
+        for right in range(left + 1, 3):
+            if abs(sum(matrix[left][index] * matrix[right][index] for index in range(3))) > 1e-9:
+                raise _error(path, "rotation rows must be orthogonal")
+    determinant = (
+        matrix[0][0] * (matrix[1][1] * matrix[2][2] - matrix[1][2] * matrix[2][1])
+        - matrix[0][1] * (matrix[1][0] * matrix[2][2] - matrix[1][2] * matrix[2][0])
+        + matrix[0][2] * (matrix[1][0] * matrix[2][1] - matrix[1][1] * matrix[2][0])
+    )
+    if abs(determinant - 1.0) > 1e-9:
+        raise _error(path, "rotation must be right-handed")
+    return matrix
+
+
 def _part_id(value: Any, path: str) -> str:
     if not isinstance(value, str) or not value or len(value) > 512 or _PART_ID_PATTERN.fullmatch(value) is None:
         raise _error(path, "expected a non-empty stable identifier")
@@ -65,6 +84,8 @@ def _mesh(value: Any, path: str) -> tuple[list[tuple[float, float, float]], list
     if not isinstance(raw_vertices, list) or not isinstance(raw_faces, list) or not isinstance(raw_edges, list):
         raise _error(path, "vertices, faces, and edges must be arrays")
     vertices = [_vector(vertex, f"{path}.vertices[{index}]") for index, vertex in enumerate(raw_vertices)]
+    if len(vertices) > object_recipe.MAX_ASSEMBLY_VERTICES:
+        raise _error(path, f"vertex count exceeds {object_recipe.MAX_ASSEMBLY_VERTICES}")
     faces: list[tuple[int, int, int]] = []
     for index, face in enumerate(raw_faces):
         if not isinstance(face, (list, tuple)) or len(face) != 3 or any(isinstance(item, bool) or not isinstance(item, int) for item in face):
@@ -72,6 +93,8 @@ def _mesh(value: Any, path: str) -> tuple[list[tuple[float, float, float]], list
         if any(item < 0 or item >= len(vertices) for item in face):
             raise _error(f"{path}.faces[{index}]", "face index is outside the vertex array")
         faces.append(tuple(face))
+    if len(faces) > object_recipe.MAX_ASSEMBLY_FACES:
+        raise _error(path, f"face count exceeds {object_recipe.MAX_ASSEMBLY_FACES}")
     edges: list[tuple[int, int]] = []
     for index, edge in enumerate(raw_edges):
         if not isinstance(edge, (list, tuple)) or len(edge) != 2 or any(isinstance(item, bool) or not isinstance(item, int) for item in edge):
@@ -79,6 +102,8 @@ def _mesh(value: Any, path: str) -> tuple[list[tuple[float, float, float]], list
         if any(item < 0 or item >= len(vertices) for item in edge):
             raise _error(f"{path}.edges[{index}]", "edge index is outside the vertex array")
         edges.append(tuple(edge))
+    if len(edges) > object_recipe.MAX_ASSEMBLY_EDGES:
+        raise _error(path, f"edge count exceeds {object_recipe.MAX_ASSEMBLY_EDGES}")
     return vertices, faces, edges
 
 
@@ -89,7 +114,7 @@ def _anchor(value: Any, path: str) -> object_recipe.EvaluatedAnchor:
     return object_recipe.EvaluatedAnchor(
         name=name,
         position=_vector(value["position"], f"{path}.position"),
-        rotation=_matrix(value["rotation"], f"{path}.rotation"),
+        rotation=_rotation(value["rotation"], f"{path}.rotation"),
     )
 
 
@@ -108,8 +133,10 @@ def _validate_part(value: Any, index: int) -> tuple[object_recipe.RecipePartMesh
     if not isinstance(transform, Mapping) or set(transform) != {"position", "rotation", "scale"}:
         raise _error(f"{path}.transform", "malformed evaluated transform")
     position = _vector(transform["position"], f"{path}.transform.position")
-    rotation = _matrix(transform["rotation"], f"{path}.transform.rotation")
+    rotation = _rotation(transform["rotation"], f"{path}.transform.rotation")
     scale = _vector(transform["scale"], f"{path}.transform.scale")
+    if any(value == 0.0 for value in scale):
+        raise _error(f"{path}.transform.scale", "scale components cannot be zero")
     raw_anchors = value["anchors"]
     if not isinstance(raw_anchors, list):
         raise _error(f"{path}.anchors", "expected an array")
@@ -155,7 +182,7 @@ def _validate_connection(value: Any, index: int) -> object_recipe.EvaluatedConne
         mode=mode,
         offset=_vector(value["offset"], f"{path}.offset"),
         offset_space=offset_space,
-        rotation_offset=_matrix(value["rotation_offset"], f"{path}.rotation_offset"),
+        rotation_offset=_rotation(value["rotation_offset"], f"{path}.rotation_offset"),
         source=source,
         target=target_frame,
     )
@@ -185,6 +212,19 @@ def validate_object_package(package: Mapping[str, Any]) -> dict[str, Any]:
     if len({part[0].part_id for part in parts}) != len(parts):
         raise _error("parts", "duplicate part identifiers")
     part_ids = {part[0].part_id for part in parts}
+    aggregate_counts = (
+        sum(len(part[0].vertices) for part in parts),
+        sum(len(part[0].faces) for part in parts),
+        sum(len(part[0].edges) for part in parts),
+    )
+    limits = (
+        object_recipe.MAX_ASSEMBLY_VERTICES,
+        object_recipe.MAX_ASSEMBLY_FACES,
+        object_recipe.MAX_ASSEMBLY_EDGES,
+    )
+    for resource, actual, limit in zip(("vertices", "faces", "edges"), aggregate_counts, limits):
+        if actual > limit:
+            raise _error("parts", f"aggregate {resource} count {actual} exceeds {limit}")
     raw_connections = package["connections"]
     if not isinstance(raw_connections, list):
         raise _error("connections", "expected an array")
@@ -194,12 +234,15 @@ def validate_object_package(package: Mapping[str, Any]) -> dict[str, Any]:
     for connection in connections:
         if connection.part_id not in part_ids or connection.target_part_id not in part_ids:
             raise _error(f"connections[{connection.connection_id}]", "references an unknown part")
+        source_names = {anchor.name for part, evaluated in parts if part.part_id == connection.part_id for anchor in evaluated.anchors}
+        target_names = {anchor.name for part, evaluated in parts if part.part_id == connection.target_part_id for anchor in evaluated.anchors}
+        if connection.anchor not in source_names or connection.target_anchor not in target_names:
+            raise _error(f"connections[{connection.connection_id}]", "references an unknown anchor")
     return json.loads(json.dumps(package, ensure_ascii=False))
 
 
-def export_object_package(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
-    """Evaluate a v0.6 recipe through the existing pipeline and export it."""
-    evaluated = object_recipe.build_evaluated_recipe(recipe, registry)
+def export_evaluated_package(evaluated: object_recipe.EvaluatedRecipe) -> dict[str, Any]:
+    """Export an already evaluated v0.6 assembly without re-evaluating it."""
     evaluated_parts = {part.part_id: part for part in evaluated.evaluated_parts}
     package_parts = []
     for part in evaluated.parts:
@@ -249,6 +292,11 @@ def export_object_package(recipe: Mapping[str, Any], registry: Mapping[str, Any]
     return package
 
 
+def export_object_package(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> dict[str, Any]:
+    """Evaluate a v0.6 recipe through the existing pipeline and export it."""
+    return export_evaluated_package(object_recipe.build_evaluated_recipe(recipe, registry))
+
+
 def serialize_object_package(package: Mapping[str, Any]) -> str:
     """Validate and serialize a package using stable JSON ordering."""
     validated = validate_object_package(package)
@@ -281,3 +329,12 @@ def load_serialized_object_package(source: str | bytes) -> object_recipe.Evaluat
     except (TypeError, json.JSONDecodeError) as exc:
         raise ObjectPackageError("Object Package is not valid JSON") from exc
     return load_object_package(package)
+
+
+def evaluated_recipes_equal(left: object_recipe.EvaluatedRecipe, right: object_recipe.EvaluatedRecipe) -> bool:
+    """Compare evaluated objects using their canonical structural representation."""
+    if left.name != right.name or left.source_recipe_version != right.source_recipe_version:
+        return False
+    if left.parts != right.parts or left.evaluated_parts != right.evaluated_parts:
+        return False
+    return left.connections == right.connections

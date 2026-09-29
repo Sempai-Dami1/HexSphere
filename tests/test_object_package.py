@@ -96,6 +96,17 @@ def test_primitive_package_preserves_parts_and_round_trips():
     assert package["object"]["source_recipe_version"] == "0.6"
     assert loaded.parts == original.parts
     assert loaded.evaluated_parts == original.evaluated_parts
+    assert object_package.evaluated_recipes_equal(loaded, original)
+
+
+def test_direct_evaluated_export_matches_recipe_export():
+    value = recipe([block(transform={"position": [1.0, 2.0, 3.0], "rotation": [0.0, 0.0, 20.0], "scale": [1.0, 2.0, 1.0]})])
+    evaluated = object_recipe.build_evaluated_recipe(value, streamlit_app.OBJECT_REGISTRY)
+
+    from_recipe = object_package.export_object_package(value, streamlit_app.OBJECT_REGISTRY)
+    from_evaluated = object_package.export_evaluated_package(evaluated)
+
+    assert object_package.serialize_object_package(from_recipe) == object_package.serialize_object_package(from_evaluated)
 
 
 def test_raster_operations_export_lossless_meshes():
@@ -181,6 +192,40 @@ def test_package_serialization_is_deterministic():
     assert json.loads(first) == json.loads(second)
 
 
+def test_double_round_trip_is_a_canonical_fixed_point():
+    value = recipe([block(), raster_part("stack", stack_geometry())])
+    first_package = object_package.export_object_package(value, streamlit_app.OBJECT_REGISTRY)
+    first_serialized = object_package.serialize_object_package(first_package)
+    first_loaded = object_package.load_serialized_object_package(first_serialized)
+    second_package = object_package.export_evaluated_package(first_loaded)
+    second_serialized = object_package.serialize_object_package(second_package)
+    second_loaded = object_package.load_serialized_object_package(second_serialized)
+
+    assert first_serialized == second_serialized
+    assert object_package.evaluated_recipes_equal(first_loaded, second_loaded)
+
+
+def test_package_loader_is_independent_of_recipe_evaluator(monkeypatch):
+    value = recipe([block()])
+    package = object_package.export_object_package(value, streamlit_app.OBJECT_REGISTRY)
+
+    def fail_evaluation(*args, **kwargs):
+        raise AssertionError("package loading must not evaluate recipes")
+
+    monkeypatch.setattr(object_recipe, "build_evaluated_recipe", fail_evaluation)
+    loaded = object_package.load_object_package(package)
+    combined = object_recipe.combine_recipe_parts(list(loaded.parts))
+    assert combined[0]
+
+
+def test_package_validation_preserves_aggregate_resource_limits(monkeypatch):
+    package = object_package.export_object_package(recipe([block("first"), block("second")]), streamlit_app.OBJECT_REGISTRY)
+    monkeypatch.setattr(object_recipe, "MAX_ASSEMBLY_VERTICES", 8)
+
+    with pytest.raises(object_package.ObjectPackageError, match="aggregate vertices count"):
+        object_package.validate_object_package(package)
+
+
 @pytest.mark.parametrize(
     "mutate, message",
     [
@@ -189,6 +234,8 @@ def test_package_serialization_is_deterministic():
         (lambda package: package["parts"][0]["geometry"]["faces"].__setitem__(0, [0, 1, 999]), "faces"),
         (lambda package: package["parts"].append(copy.deepcopy(package["parts"][0])), "duplicate"),
         (lambda package: package["parts"][0]["geometry"].update(normals=[]), "unsupported"),
+        (lambda package: package["parts"][0]["transform"]["rotation"].__setitem__(0, [2.0, 0.0, 0.0]), "rotation"),
+        (lambda package: package["parts"][0]["transform"]["scale"].__setitem__(0, 0.0), "scale"),
     ],
 )
 def test_malformed_packages_are_rejected(mutate, message):
@@ -196,6 +243,26 @@ def test_malformed_packages_are_rejected(mutate, message):
     package = object_package.export_object_package(value, streamlit_app.OBJECT_REGISTRY)
     mutate(package)
     with pytest.raises(object_package.ObjectPackageError):
+        object_package.validate_object_package(package)
+
+
+def test_package_validation_rejects_unknown_connection_anchor():
+    value = recipe([block()])
+    package = object_package.export_object_package(value, streamlit_app.OBJECT_REGISTRY)
+    package["connections"] = [{
+        "id": "bad",
+        "part": "base",
+        "anchor": "missing",
+        "target": {"part": "base", "anchor": "missing"},
+        "mode": "position",
+        "offset": [0.0, 0.0, 0.0],
+        "offset_space": "target",
+        "rotation_offset": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        "source": {"name": "missing", "position": [0.0, 0.0, 0.0], "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]},
+        "target_anchor_frame": {"name": "missing", "position": [0.0, 0.0, 0.0], "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]},
+    }]
+
+    with pytest.raises(object_package.ObjectPackageError, match="unknown anchor"):
         object_package.validate_object_package(package)
 
 
