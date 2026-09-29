@@ -10,6 +10,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from PIL import Image
 
+import object_package
+import object_recipe
 import picture_sphere
 
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
@@ -2117,6 +2119,45 @@ def generate_active_geometry():
     return generator(st.session_state)
 
 
+def build_active_object_v06_recipe(active_object=None, parameter_values=None):
+    """Map one enabled registry object and its declared parameters to a v0.6 recipe part."""
+    active = st.session_state.active_object if active_object is None else active_object
+    config = OBJECT_REGISTRY.get(active)
+    if config is None or not config.get("enabled", True) or config.get("generator") is None:
+        raise ValueError(f"Object '{active}' is not available for Object Package export.")
+
+    values = st.session_state if parameter_values is None else parameter_values
+    parameters = {
+        key: values.get(key, metadata["default"])
+        for key, metadata in config["params"].items()
+    }
+    return {
+        "format": "hexsphere.object-recipe",
+        "version": "0.6",
+        "object": {
+            "name": active,
+            "parameters": {},
+            "parts": [{
+                "id": active,
+                "type": active,
+                "parameters": parameters,
+            }],
+        },
+    }
+
+
+def build_active_object_v06_evaluated(active_object=None, parameter_values=None):
+    """Evaluate the active registry selection through the established v0.6 recipe pipeline."""
+    recipe = build_active_object_v06_recipe(active_object, parameter_values)
+    return object_recipe.build_evaluated_recipe(recipe, OBJECT_REGISTRY)
+
+
+def serialize_active_object_package(evaluated):
+    """Serialize an evaluated registry object through the canonical Object Package 1.0 API."""
+    package = object_package.export_evaluated_package(evaluated)
+    return object_package.serialize_object_package(package)
+
+
 def apply_material():
     preset = MATERIAL_PRESETS.get(st.session_state.vis_material)
     if preset:
@@ -2200,7 +2241,14 @@ def apply_recipe_dict(recipe):
 st.session_state.setdefault("previous_active_object", st.session_state.active_object)
 sync_controls_to_object(st.session_state.active_object, st.session_state.previous_active_object)
 
-vertices, faces, edge_indices = generate_active_geometry()
+active_object_config = OBJECT_REGISTRY[st.session_state.active_object]
+if active_object_config.get("enabled", True) and active_object_config.get("generator") is not None:
+    active_object_evaluated = build_active_object_v06_evaluated()
+    active_object_part = active_object_evaluated.parts[0]
+    vertices, faces, edge_indices = active_object_part.vertices, active_object_part.faces, active_object_part.edges
+else:
+    active_object_evaluated = None
+    vertices, faces, edge_indices = generate_active_geometry()
 
 if "_preset_toast" in st.session_state and st.session_state["_preset_toast"]:
     st.toast(st.session_state["_preset_toast"])
@@ -2402,6 +2450,30 @@ with st.sidebar:
         mime="text/plain",
         width='stretch',
     )
+
+    st.markdown("#### Object Package 1.0")
+    st.caption("Evaluated geometry for interchange; excludes app presets, materials, and authoring controls.")
+    package_json = None
+    package_export_error = None
+    if active_object_evaluated is not None:
+        try:
+            package_json = serialize_active_object_package(active_object_evaluated)
+        except object_package.ObjectPackageError as exc:
+            package_export_error = str(exc)
+    package_file_name = f"{st.session_state.active_object.lower().replace(' ', '_')}.object-package.json"
+    st.download_button(
+        label="Export Object Package 1.0",
+        data=package_json or "",
+        file_name=package_file_name,
+        mime="application/json",
+        on_click="ignore",
+        disabled=package_json is None,
+        width='stretch',
+    )
+    if package_export_error:
+        st.caption(f"Package export unavailable: {package_export_error}")
+    elif active_object_evaluated is None:
+        st.caption("Package export is unavailable for this disabled object.")
 
     st.divider()
     st.markdown("### Recipe (Save/Load Config)")

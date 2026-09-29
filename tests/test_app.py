@@ -1,6 +1,10 @@
+import json
 import pathlib
 import plotly.graph_objects as go
+import pytest
+import object_package_consumer
 import streamlit_app
+import object_recipe
 
 
 def test_streamlit_entrypoint_uses_plotly_chart():
@@ -42,6 +46,90 @@ def test_native_obj_generation():
     assert "v 1.0 0.0 0.0" in obj_text
     assert "v 0.0 1.0 0.0" in obj_text
     assert "f 1 2 3" in obj_text
+
+
+@pytest.mark.parametrize(
+    "object_type",
+    [
+        object_type
+        for object_type, config in streamlit_app.OBJECT_REGISTRY.items()
+        if config.get("enabled", True) and config.get("generator") is not None
+    ],
+)
+def test_active_object_v06_adapter_preserves_enabled_registry_geometry_and_legacy_obj(object_type):
+    config = streamlit_app.OBJECT_REGISTRY[object_type]
+    parameters = {key: metadata["default"] for key, metadata in config["params"].items()}
+
+    recipe = streamlit_app.build_active_object_v06_recipe(object_type, parameters)
+    evaluated = object_recipe.build_evaluated_recipe(recipe, streamlit_app.OBJECT_REGISTRY)
+    part = evaluated.parts[0]
+    vertices, faces, edges = config["generator"](parameters)
+
+    assert recipe["version"] == "0.6"
+    assert recipe["object"]["parts"][0]["parameters"] == parameters
+    assert part.part_id == object_type
+    assert part.object_type == object_type
+    assert part.vertices == [tuple(vertex) for vertex in vertices]
+    assert part.faces == [tuple(face) for face in faces]
+    assert part.edges == [tuple(edge) for edge in edges]
+    assert streamlit_app.generate_obj_text(vertices, faces, object_name=object_type, params=parameters) == (
+        streamlit_app.generate_obj_text(part.vertices, part.faces, object_name=object_type, params=parameters)
+    )
+
+
+def test_active_object_v06_adapter_uses_current_parameter_overrides():
+    object_type = "SimpleBlock"
+    parameters = {"cube_size": 2.75, "thickness": 2}
+    recipe = streamlit_app.build_active_object_v06_recipe(object_type, parameters)
+    evaluated = object_recipe.build_evaluated_recipe(recipe, streamlit_app.OBJECT_REGISTRY)
+    expected = streamlit_app.OBJECT_REGISTRY[object_type]["generator"](parameters)
+
+    assert recipe["object"]["parts"][0]["parameters"] == parameters
+    assert evaluated.parts[0].vertices == [tuple(vertex) for vertex in expected[0]]
+    assert evaluated.parts[0].faces == [tuple(face) for face in expected[1]]
+    assert evaluated.parts[0].edges == [tuple(edge) for edge in expected[2]]
+
+
+def test_active_object_v06_adapter_rejects_disabled_registry_objects():
+    with pytest.raises(ValueError, match="not available for Object Package export"):
+        streamlit_app.build_active_object_v06_recipe("AdvancedBlock", {})
+
+
+def test_active_object_package_json_loads_in_independent_consumer_and_plotly():
+    object_type = "SimpleHexShpere"
+    config = streamlit_app.OBJECT_REGISTRY[object_type]
+    parameters = {key: metadata["default"] for key, metadata in config["params"].items()}
+    evaluated = streamlit_app.build_active_object_v06_evaluated(object_type, parameters)
+
+    serialized = streamlit_app.serialize_active_object_package(evaluated)
+    assert serialized == streamlit_app.serialize_active_object_package(evaluated)
+    package = json.loads(serialized)
+    consumer_package = object_package_consumer.load_package_from_json(serialized)
+    figure = object_package_consumer.build_plotly_figure(consumer_package)
+    legacy_vertices, legacy_faces, legacy_edges = config["generator"](parameters)
+
+    assert set(package) == {"format", "version", "object", "coordinate_system", "parts", "connections"}
+    assert package["format"] == "hexsphere.object-package"
+    assert package["version"] == "1.0"
+    assert package["object"]["source_recipe_version"] == "0.6"
+    assert len(consumer_package.parts) == 1
+    assert len(consumer_package.connections) == 0
+    assert len(figure.data) == 1
+    assert figure.data[0].type == "mesh3d"
+    assert list(consumer_package.parts[0].geometry.vertices) == [tuple(vertex) for vertex in legacy_vertices]
+    assert list(consumer_package.parts[0].geometry.faces) == [tuple(face) for face in legacy_faces]
+    assert list(consumer_package.parts[0].geometry.edges) == [tuple(edge) for edge in legacy_edges]
+
+
+def test_object_package_download_is_below_legacy_obj_download():
+    source = pathlib.Path(streamlit_app.__file__).read_text(encoding="utf-8")
+    legacy_button = source.index('label="Download .OBJ (Native)"')
+    package_button = source.index('label="Export Object Package 1.0"')
+
+    assert package_button > legacy_button
+    assert 'data=package_json' in source
+    assert 'mime="application/json"' in source
+    assert 'on_click="ignore"' in source
 
 
 def test_geometry_generation():
