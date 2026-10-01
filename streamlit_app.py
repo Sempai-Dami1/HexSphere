@@ -11,6 +11,7 @@ import streamlit as st
 from PIL import Image
 
 import object_package
+import object_package_consumer
 import object_recipe
 import picture_sphere
 
@@ -2158,6 +2159,12 @@ def serialize_active_object_package(evaluated):
     return object_package.serialize_object_package(package)
 
 
+def inspect_imported_object_package(source):
+    """Validate imported Package 1.0 bytes independently and prepare a Plotly preview."""
+    package = object_package_consumer.load_package_from_json(source)
+    return package, object_package_consumer.describe_package(package), object_package_consumer.build_plotly_figure(package)
+
+
 def apply_material():
     preset = MATERIAL_PRESETS.get(st.session_state.vis_material)
     if preset:
@@ -2249,6 +2256,10 @@ if active_object_config.get("enabled", True) and active_object_config.get("gener
 else:
     active_object_evaluated = None
     vertices, faces, edge_indices = generate_active_geometry()
+
+imported_object_package = None
+imported_object_package_summary = None
+imported_object_package_figure = None
 
 if "_preset_toast" in st.session_state and st.session_state["_preset_toast"]:
     st.toast(st.session_state["_preset_toast"])
@@ -2474,6 +2485,30 @@ with st.sidebar:
         st.caption(f"Package export unavailable: {package_export_error}")
     elif active_object_evaluated is None:
         st.caption("Package export is unavailable for this disabled object.")
+
+    import_object_package_clicked = st.button(
+        "Import Object Package",
+        key="import_object_package_button",
+        width="stretch",
+    )
+    package_upload = st.file_uploader(
+        "Drop an Object Package JSON file here or browse",
+        type=["json"],
+        key="object_package_import_upload",
+    )
+    if import_object_package_clicked:
+        if package_upload is None:
+            st.warning("Choose an Object Package .json file first.")
+        else:
+            try:
+                (
+                    imported_object_package,
+                    imported_object_package_summary,
+                    imported_object_package_figure,
+                ) = inspect_imported_object_package(package_upload.getvalue())
+                st.success(f"Validated Object Package 1.0: {imported_object_package.name}")
+            except object_package_consumer.ConsumerPackageError as exc:
+                st.error(f"Invalid Object Package: {exc}")
 
     st.divider()
     st.markdown("### Recipe (Save/Load Config)")
@@ -2837,6 +2872,15 @@ def render_unicode_panel():
 
 
 render_viewer_section(vertices, faces, edge_indices)
+if imported_object_package is not None:
+    counts = imported_object_package_summary["resources"]
+    st.subheader(f"Imported Object Package: {imported_object_package.name}")
+    st.caption(
+        f"{imported_object_package_summary['part_count']} parts · "
+        f"{imported_object_package_summary['connection_count']} connections · "
+        f"{counts['vertices']} vertices · {counts['faces']} faces · {counts['edges']} edges"
+    )
+    st.plotly_chart(imported_object_package_figure, width="stretch")
 if st.session_state.attach_unicode_panel:
     render_unicode_panel()
 

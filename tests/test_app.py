@@ -121,12 +121,34 @@ def test_active_object_package_json_loads_in_independent_consumer_and_plotly():
     assert list(consumer_package.parts[0].geometry.edges) == [tuple(edge) for edge in legacy_edges]
 
 
+def test_streamlit_import_object_package_helper_validates_and_previews_without_mutating_object():
+    object_type = "SimpleHexShpere"
+    config = streamlit_app.OBJECT_REGISTRY[object_type]
+    parameters = {key: metadata["default"] for key, metadata in config["params"].items()}
+    evaluated = streamlit_app.build_active_object_v06_evaluated(object_type, parameters)
+    package_json = streamlit_app.serialize_active_object_package(evaluated)
+
+    package, summary, figure = streamlit_app.inspect_imported_object_package(package_json.encode("utf-8"))
+
+    assert package.name == "SimpleHexShpere"
+    assert summary["part_count"] == 1
+    assert summary["connection_count"] == 0
+    assert len(figure.data) == 1
+    assert figure.data[0].type == "mesh3d"
+    with pytest.raises(object_package_consumer.ConsumerPackageError):
+        streamlit_app.inspect_imported_object_package(b"not an Object Package")
+
+
 def test_object_package_download_is_below_legacy_obj_download():
     source = pathlib.Path(streamlit_app.__file__).read_text(encoding="utf-8")
     legacy_button = source.index('label="Download .OBJ (Native)"')
     package_button = source.index('label="Export Object Package 1.0"')
+    import_button = source.index('"Import Object Package"')
+    import_drop_area = source.index('"Drop an Object Package JSON file here or browse"')
 
     assert package_button > legacy_button
+    assert import_button > package_button
+    assert import_drop_area > import_button
     assert 'data=package_json' in source
     assert 'mime="application/json"' in source
     assert 'on_click="ignore"' in source

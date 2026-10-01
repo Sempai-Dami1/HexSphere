@@ -58,6 +58,36 @@ button:hover {
   background: #2b424b;
 }
 
+.package-file-fallback {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #b8c8cd;
+}
+
+.package-dropzone {
+  display: flex;
+  align-items: center;
+  min-height: 2.2rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px dashed #607981;
+  border-radius: 4px;
+  color: #b8c8cd;
+  background: #152127;
+  font-size: 0.8rem;
+}
+
+.package-dropzone[data-drag-over="true"] {
+  border-color: #77cfc4;
+  color: #e7edf0;
+  background: #203139;
+}
+
+.package-dropzone:focus-visible {
+  outline: 2px solid #77cfc4;
+  outline-offset: 2px;
+}
+
 #status {
   flex: 1 1 14rem;
   color: #a9bdc4;
@@ -133,6 +163,10 @@ button:hover {
     flex-direction: column;
     gap: 0.65rem;
     padding: 1rem;
+  }
+
+  .package-file-fallback {
+    flex-wrap: wrap;
   }
 
   #status {

@@ -33,7 +33,9 @@ interface ViewerDebugState {
   anchorOverlayCount: number;
   connectionOverlayCount: number;
   anchors: { part: string; name: string; position: number[] }[];
+  anchorMetadata: { part: string; name: string; position: number[]; rotation: number[][] }[];
   connections: { id: string; source: number[]; target: number[] }[];
+  connectionMetadata: ObjectPackage["connections"];
 }
 
 declare global {
@@ -45,6 +47,8 @@ declare global {
 const canvas = document.querySelector<HTMLCanvasElement>("#render-canvas");
 const status = document.querySelector<HTMLElement>("#status");
 const packageInput = document.querySelector<HTMLInputElement>("#package-input");
+const importPackageButton = document.querySelector<HTMLButtonElement>("#import-package");
+const packageDropzone = document.querySelector<HTMLDivElement>("#package-dropzone");
 const fixtureButton = document.querySelector<HTMLButtonElement>("#load-fixture");
 const partList = document.querySelector<HTMLOListElement>("#part-list");
 const spatialList = document.querySelector<HTMLOListElement>("#spatial-list");
@@ -52,7 +56,7 @@ const axesToggle = document.querySelector<HTMLInputElement>("#show-axes");
 const anchorsToggle = document.querySelector<HTMLInputElement>("#show-anchors");
 const connectionsToggle = document.querySelector<HTMLInputElement>("#show-connections");
 
-if (!canvas || !status || !packageInput || !fixtureButton || !partList || !spatialList
+if (!canvas || !status || !packageInput || !importPackageButton || !packageDropzone || !fixtureButton || !partList || !spatialList
   || !axesToggle || !anchorsToggle || !connectionsToggle) {
   throw new Error("The viewer page is missing a required control.");
 }
@@ -60,6 +64,8 @@ if (!canvas || !status || !packageInput || !fixtureButton || !partList || !spati
 const viewerCanvas = canvas;
 const viewerStatus = status;
 const viewerPackageInput = packageInput;
+const viewerImportPackageButton = importPackageButton;
+const viewerPackageDropzone = packageDropzone;
 const viewerFixtureButton = fixtureButton;
 const viewerPartList = partList;
 const viewerSpatialList = spatialList;
@@ -149,11 +155,16 @@ function debugState(): ViewerDebugState {
       name: anchor.name,
       position: anchor.position,
     }))) ?? [],
+    anchorMetadata: value?.parts.flatMap((part) => part.anchors.map((anchor) => ({
+      part: part.id,
+      ...anchor,
+    }))) ?? [],
     connections: value?.connections.map((connection) => ({
       id: connection.id,
       source: connection.source.position,
       target: connection.target_anchor_frame.position,
     })) ?? [],
+    connectionMetadata: value?.connections ?? [],
   };
 }
 
@@ -200,16 +211,45 @@ async function loadReferenceFixture(): Promise<void> {
   }
 }
 
-viewerPackageInput.addEventListener("change", async () => {
-  const file = viewerPackageInput.files?.[0];
-  if (!file) return;
+async function importPackageFile(file: File): Promise<void> {
   try {
     loadPackage(JSON.parse(await file.text()));
   } catch (error) {
     showStatus(error instanceof Error ? error.message : "Unable to load the Object Package.", true);
-  } finally {
-    viewerPackageInput.value = "";
   }
+}
+
+viewerImportPackageButton.addEventListener("click", () => viewerPackageInput.click());
+viewerPackageInput.addEventListener("change", async () => {
+  const file = viewerPackageInput.files?.[0];
+  if (file) await importPackageFile(file);
+  viewerPackageInput.value = "";
+});
+
+viewerPackageDropzone.addEventListener("click", () => viewerPackageInput.click());
+viewerPackageDropzone.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    viewerPackageInput.click();
+  }
+});
+viewerPackageDropzone.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  viewerPackageDropzone.dataset.dragOver = "true";
+});
+viewerPackageDropzone.addEventListener("dragleave", (event) => {
+  event.preventDefault();
+  viewerPackageDropzone.dataset.dragOver = "false";
+});
+viewerPackageDropzone.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  viewerPackageDropzone.dataset.dragOver = "false";
+  const file = event.dataTransfer?.files[0];
+  if (!file) {
+    showStatus("Drop one Object Package JSON file.", true);
+    return;
+  }
+  await importPackageFile(file);
 });
 
 viewerFixtureButton.addEventListener("click", () => void loadReferenceFixture());

@@ -9,7 +9,11 @@
     <main class="viewer-shell">
       <header>
         <h1>Object Package 1.0 viewer</h1>
-        <label>Load package <input id="package-input" type="file" accept="application/json,.json" /></label>
+        <button id="import-package" type="button">Import Object Package</button>
+        <label class="package-file-fallback">Choose JSON file <input id="package-input" type="file" accept="application/json,.json" /></label>
+        <div id="package-dropzone" class="package-dropzone" role="button" tabindex="0" aria-label="Drop an Object Package JSON file">
+          <span>Drop Object Package JSON here</span>
+        </div>
         <button id="load-fixture" type="button">Load reference fixture</button>
         <span id="status" role="status">Choose an Object Package JSON file.</span>
       </header>
