@@ -113,11 +113,27 @@ button:hover {
   background: #152127;
 }
 
+.metadata-panel section + section {
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #314047;
+}
+
+.metadata-panel select {
+  width: 100%;
+  min-width: 0;
+  margin-top: 0.4rem;
+  padding: 0.4rem;
+  border: 1px solid #496069;
+  border-radius: 3px;
+  color: #e7edf0;
+  background: #10191e;
+  font-size: 0.8rem;
+}
+
 .display-controls {
   display: grid;
   gap: 0.55rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid #314047;
 }
 
 .display-controls label {
@@ -127,7 +143,7 @@ button:hover {
 }
 
 .metadata-panel section {
-  padding-top: 1rem;
+  min-width: 0;
 }
 
 .metadata-panel h2 {
@@ -136,20 +152,50 @@ button:hover {
   font-weight: 650;
 }
 
-.metadata-panel ol {
+.inspector-details {
   display: grid;
-  gap: 0.65rem;
+  grid-template-columns: minmax(4.75rem, auto) minmax(0, 1fr);
+  gap: 0.3rem 0.55rem;
   margin: 0;
-  padding-left: 1.4rem;
-  color: #b8c8cd;
-  font-size: 0.76rem;
+  padding-top: 0.6rem;
+  font-size: 0.73rem;
   overflow-wrap: anywhere;
 }
 
-.metadata-panel li span {
-  display: block;
+.inspector-details dt {
   color: #82969d;
+}
+
+.inspector-details dd {
+  min-width: 0;
+  margin: 0;
+  color: #d5e0e3;
+  font-family: Consolas, "Courier New", monospace;
   font-variant-numeric: tabular-nums;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.metadata-panel details {
+  margin-top: 0.6rem;
+  color: #b8c8cd;
+  font-size: 0.75rem;
+}
+
+.metadata-panel pre {
+  max-height: 12rem;
+  overflow: auto;
+  color: #a9bdc4;
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.camera-controls {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
 }
 
 @media (max-width: 700px) {

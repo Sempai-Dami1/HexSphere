@@ -19,18 +19,49 @@
       </header>
       <canvas id="render-canvas" aria-label="Babylon object package view"></canvas>
       <aside class="metadata-panel" aria-label="Package metadata">
-        <div class="display-controls">
-          <label><input id="show-axes" type="checkbox" checked /> World axes</label>
-          <label><input id="show-anchors" type="checkbox" checked /> Anchors</label>
-          <label><input id="show-connections" type="checkbox" checked /> Connections</label>
-        </div>
         <section>
-          <h2>Parts</h2>
-          <ol id="part-list"></ol>
+          <h2>Package</h2>
+          <p id="validation-status" role="status">No package loaded.</p>
+          <dl id="package-overview" class="inspector-details"></dl>
         </section>
         <section>
-          <h2>Spatial metadata</h2>
-          <ol id="spatial-list"></ol>
+          <h2>Resources</h2>
+          <dl id="resource-summary" class="inspector-details"></dl>
+        </section>
+        <section>
+          <h2>Part inspector</h2>
+          <label for="part-select">Part</label>
+          <select id="part-select"></select>
+          <dl id="part-details" class="inspector-details"></dl>
+          <details>
+            <summary>Part metadata</summary>
+            <pre id="part-metadata"></pre>
+          </details>
+        </section>
+        <section>
+          <h2>Anchor inspector</h2>
+          <label for="anchor-select">Anchor</label>
+          <select id="anchor-select"></select>
+          <dl id="anchor-details" class="inspector-details"></dl>
+        </section>
+        <section>
+          <h2>Connection inspector</h2>
+          <label for="connection-select">Connection</label>
+          <select id="connection-select"></select>
+          <dl id="connection-details" class="inspector-details"></dl>
+        </section>
+        <section>
+          <h2>Scene controls</h2>
+          <div class="display-controls">
+            <label><input id="show-axes" type="checkbox" checked /> World axes</label>
+            <label><input id="show-anchors" type="checkbox" checked /> Anchors</label>
+            <label><input id="show-connections" type="checkbox" checked /> Connections</label>
+            <label><input id="show-part-labels" type="checkbox" /> Part labels</label>
+          </div>
+          <div class="camera-controls">
+            <button id="reset-camera" type="button">Reset camera</button>
+            <button id="fit-object" type="button">Fit object to view</button>
+          </div>
         </section>
       </aside>
     </main>

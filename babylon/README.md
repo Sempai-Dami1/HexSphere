@@ -38,3 +38,16 @@ The fixture includes a transformed primitive, an expanded raster component, an a
 - Normals are derived from the preserved triangle winding. Edges, transforms, anchors, and package metadata remain attached to the mesh metadata.
 
 The browser checks compare positions, indices, and bounds with the Python consumer/Plotly fixture at a `1e-6` coordinate tolerance, and verify malformed package diagnostics, evaluated metadata, and nonblank WebGL output. The viewer does not change the frozen Object Package format, recipe schemas, Python evaluator, or Phase 5K/5L contracts.
+
+## Package Inspector
+
+The sidebar inspector is read-only and displays values from the validated Package 1.0 object: format/version, provenance, coordinate contract, parts and derived resource counts, per-part geometry bounds and transform metadata, anchors, and evaluated connections. Part selection adds a Babylon outline without changing mesh positions, indices, `packageData`, or package metadata. Anchor/connection markers, world axes, part labels, camera reset, and fit-to-object are viewer-only controls.
+
+Package data is validated before inspector rendering. No recipe settings are reconstructed or inferred. The inspector does not add package fields or edit geometry, transforms, anchors, or connections.
+
+The focused inspector browser test is included in the regular browser suite:
+
+```powershell
+npm run build
+npm run test:e2e
+```

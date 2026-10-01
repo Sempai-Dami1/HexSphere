@@ -118,7 +118,7 @@ test("real Streamlit Object Package download loads unchanged in Python and Babyl
     await page.getByRole("region", { name: /Drop an Object Package JSON/ })
       .getByTestId("stFileUploaderDropzoneInput")
       .setInputFiles(path);
-    await expect(page.getByRole("button", { name: /Remove simplehexshpere\.object-package\.json/ })).toBeVisible();
+    await expect(page.locator('img[alt="Running..."]')).toHaveCount(0, { timeout: 30_000 });
     await page.getByRole("button", { name: "Import Object Package" }).click();
     await expect(page.getByText("Validated Object Package 1.0: SimpleHexShpere", { exact: true })).toBeVisible();
     await expect(page.getByText("Imported Object Package: SimpleHexShpere", { exact: true })).toBeVisible();
