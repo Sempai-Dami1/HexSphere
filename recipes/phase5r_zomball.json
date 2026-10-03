@@ -1,0 +1,205 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "ZomBall sentry watch tower",
+    "parameters": {},
+    "parts": [],
+    "components": {
+      "platform_component": {
+        "parameters": {},
+        "parts": [
+          {
+            "id": "deck",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": 1.0,
+              "thickness": 1
+            },
+            "anchors": [
+              {"name": "bottom_front_left", "parent": "main", "local_position": [-0.44, -0.5, -0.44]},
+              {"name": "bottom_front_right", "parent": "main", "local_position": [0.44, -0.5, -0.44]},
+              {"name": "bottom_back_left", "parent": "main", "local_position": [-0.44, -0.5, 0.44]},
+              {"name": "bottom_back_right", "parent": "main", "local_position": [0.44, -0.5, 0.44]},
+              {"name": "top_front_left", "parent": "main", "local_position": [-0.44, 0.5, -0.44]},
+              {"name": "top_front_right", "parent": "main", "local_position": [0.44, 0.5, -0.44]},
+              {"name": "top_back_left", "parent": "main", "local_position": [-0.44, 0.5, 0.44]},
+              {"name": "top_back_right", "parent": "main", "local_position": [0.44, 0.5, 0.44]}
+            ]
+          }
+        ],
+        "exposes": [
+          {"name": "bottom_front_left", "source": "deck.bottom_front_left"},
+          {"name": "bottom_front_right", "source": "deck.bottom_front_right"},
+          {"name": "bottom_back_left", "source": "deck.bottom_back_left"},
+          {"name": "bottom_back_right", "source": "deck.bottom_back_right"},
+          {"name": "top_front_left", "source": "deck.top_front_left"},
+          {"name": "top_front_right", "source": "deck.top_front_right"},
+          {"name": "top_back_left", "source": "deck.top_back_left"},
+          {"name": "top_back_right", "source": "deck.top_back_right"}
+        ]
+      },
+      "timber_component": {
+        "parameters": {},
+        "parts": [
+          {
+            "id": "member",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": 1.0,
+              "thickness": 1
+            },
+            "anchors": [
+              {"name": "member_base", "parent": "main", "local_position": [0, -0.5, 0]},
+              {"name": "member_tip", "parent": "main", "local_position": [0, 0.5, 0]}
+            ]
+          }
+        ],
+        "exposes": [
+          {"name": "member_base", "source": "member.member_base"},
+          {"name": "member_tip", "source": "member.member_tip"}
+        ]
+      }
+    },
+    "instances": [
+      {
+        "id": "platform",
+        "component": "platform_component",
+        "transform": {
+          "position": [0, 3.45, 0],
+          "scale": [4.4, 0.3, 4.4]
+        }
+      },
+      {
+        "id": "post_front_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 1.65, -1.936], "scale": [0.26, 3.3, 0.26]}
+      },
+      {
+        "id": "post_front_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 1.65, -1.936], "scale": [0.26, 3.3, 0.26]}
+      },
+      {
+        "id": "post_back_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 1.65, 1.936], "scale": [0.26, 3.3, 0.26]}
+      },
+      {
+        "id": "post_back_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 1.65, 1.936], "scale": [0.26, 3.3, 0.26]}
+      },
+      {
+        "id": "tie_lower_front",
+        "component": "timber_component",
+        "transform": {"position": [0, 0.9, -1.936], "rotation": [-90, 0, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_lower_back",
+        "component": "timber_component",
+        "transform": {"position": [0, 0.9, 1.936], "rotation": [-90, 0, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_lower_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 0.9, 0], "rotation": [0, 90, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_lower_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 0.9, 0], "rotation": [0, 90, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_upper_front",
+        "component": "timber_component",
+        "transform": {"position": [0, 2.4, -1.936], "rotation": [-90, 0, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_upper_back",
+        "component": "timber_component",
+        "transform": {"position": [0, 2.4, 1.936], "rotation": [-90, 0, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_upper_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 2.4, 0], "rotation": [0, 90, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "tie_upper_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 2.4, 0], "rotation": [0, 90, 0], "scale": [0.18, 3.872, 0.18]}
+      },
+      {
+        "id": "brace_front",
+        "component": "timber_component",
+        "transform": {"position": [0, 1.45, -1.936], "rotation": [-63.85, 0, 0], "scale": [0.14, 4.313, 0.14]}
+      },
+      {
+        "id": "brace_back",
+        "component": "timber_component",
+        "transform": {"position": [0, 1.45, 1.936], "rotation": [63.85, 0, 0], "scale": [0.14, 4.313, 0.14]}
+      },
+      {
+        "id": "brace_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 1.45, 0], "rotation": [0, 63.85, 0], "scale": [0.14, 4.313, 0.14]}
+      },
+      {
+        "id": "brace_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 1.45, 0], "rotation": [0, -63.85, 0], "scale": [0.14, 4.313, 0.14]}
+      },
+      {
+        "id": "lookout_post_front_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 4.1, -1.936], "scale": [0.16, 1.0, 0.16]}
+      },
+      {
+        "id": "lookout_post_front_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 4.1, -1.936], "scale": [0.16, 1.0, 0.16]}
+      },
+      {
+        "id": "lookout_post_back_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 4.1, 1.936], "scale": [0.16, 1.0, 0.16]}
+      },
+      {
+        "id": "lookout_post_back_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 4.1, 1.936], "scale": [0.16, 1.0, 0.16]}
+      },
+      {
+        "id": "rail_front",
+        "component": "timber_component",
+        "transform": {"position": [0, 4.45, -1.936], "rotation": [-90, 0, 0], "scale": [0.12, 3.872, 0.12]}
+      },
+      {
+        "id": "rail_back",
+        "component": "timber_component",
+        "transform": {"position": [0, 4.45, 1.936], "rotation": [-90, 0, 0], "scale": [0.12, 3.872, 0.12]}
+      },
+      {
+        "id": "rail_left",
+        "component": "timber_component",
+        "transform": {"position": [-1.936, 4.45, 0], "rotation": [0, 90, 0], "scale": [0.12, 3.872, 0.12]}
+      },
+      {
+        "id": "rail_right",
+        "component": "timber_component",
+        "transform": {"position": [1.936, 4.45, 0], "rotation": [0, 90, 0], "scale": [0.12, 3.872, 0.12]}
+      }
+    ],
+    "connections": [
+      {"id": "connect_post_front_left", "part": "post_front_left.member_tip", "anchor": "member_tip", "target": {"part": "platform.bottom_front_left", "anchor": "bottom_front_left"}, "mode": "position"},
+      {"id": "connect_post_front_right", "part": "post_front_right.member_tip", "anchor": "member_tip", "target": {"part": "platform.bottom_front_right", "anchor": "bottom_front_right"}, "mode": "position"},
+      {"id": "connect_post_back_left", "part": "post_back_left.member_tip", "anchor": "member_tip", "target": {"part": "platform.bottom_back_left", "anchor": "bottom_back_left"}, "mode": "position"},
+      {"id": "connect_post_back_right", "part": "post_back_right.member_tip", "anchor": "member_tip", "target": {"part": "platform.bottom_back_right", "anchor": "bottom_back_right"}, "mode": "position"},
+      {"id": "connect_lookout_front_left", "part": "lookout_post_front_left.member_base", "anchor": "member_base", "target": {"part": "platform.top_front_left", "anchor": "top_front_left"}, "mode": "position"},
+      {"id": "connect_lookout_front_right", "part": "lookout_post_front_right.member_base", "anchor": "member_base", "target": {"part": "platform.top_front_right", "anchor": "top_front_right"}, "mode": "position"},
+      {"id": "connect_lookout_back_left", "part": "lookout_post_back_left.member_base", "anchor": "member_base", "target": {"part": "platform.top_back_left", "anchor": "top_back_left"}, "mode": "position"},
+      {"id": "connect_lookout_back_right", "part": "lookout_post_back_right.member_base", "anchor": "member_base", "target": {"part": "platform.top_back_right", "anchor": "top_back_right"}, "mode": "position"}
+    ]
+  }
+}

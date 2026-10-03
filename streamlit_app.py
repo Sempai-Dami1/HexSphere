@@ -18,6 +18,7 @@ import picture_sphere
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
 
 APP_VERSION = "1.0.0"
+PHASE5R_ZOMBALL_RECIPE_PATH = Path(__file__).with_name("recipes") / "phase5r_zomball.json"
 
 MATERIAL_PRESETS = {
     "Matte": {"alpha": 1.0, "flatshading": True},
@@ -2159,6 +2160,25 @@ def serialize_active_object_package(evaluated):
     return object_package.serialize_object_package(package)
 
 
+def build_phase5r_zomball_evaluated():
+    """Evaluate the controlled Phase 5R candidate through the v0.6 recipe pipeline."""
+    recipe = json.loads(PHASE5R_ZOMBALL_RECIPE_PATH.read_text(encoding="utf-8"))
+    return object_recipe.build_evaluated_recipe(recipe, OBJECT_REGISTRY)
+
+
+@st.cache_data(show_spinner=False)
+def _serialize_phase5r_zomball_recipe(recipe_source):
+    recipe = json.loads(recipe_source)
+    evaluated = object_recipe.build_evaluated_recipe(recipe, OBJECT_REGISTRY)
+    return serialize_active_object_package(evaluated)
+
+
+def serialize_phase5r_zomball_package():
+    """Serialize the Phase 5R candidate through the canonical Package 1.0 exporter."""
+    recipe_source = PHASE5R_ZOMBALL_RECIPE_PATH.read_text(encoding="utf-8")
+    return _serialize_phase5r_zomball_recipe(recipe_source)
+
+
 def inspect_imported_object_package(source):
     """Validate imported Package 1.0 bytes independently and prepare a Plotly preview."""
     package = object_package_consumer.load_package_from_json(source)
@@ -2481,10 +2501,27 @@ with st.sidebar:
         disabled=package_json is None,
         width='stretch',
     )
+    phase5r_package_json = None
+    phase5r_package_error = None
+    try:
+        phase5r_package_json = serialize_phase5r_zomball_package()
+    except (OSError, ValueError) as exc:
+        phase5r_package_error = str(exc)
+    st.download_button(
+        label="Export Phase 5R ZomBall Package 1.0",
+        data=phase5r_package_json or "",
+        file_name="zomball_sentry_watch_tower.object-package.json",
+        mime="application/json",
+        on_click="ignore",
+        disabled=phase5r_package_json is None,
+        width='stretch',
+    )
     if package_export_error:
         st.caption(f"Package export unavailable: {package_export_error}")
     elif active_object_evaluated is None:
         st.caption("Package export is unavailable for this disabled object.")
+    if phase5r_package_error:
+        st.caption(f"Phase 5R package export unavailable: {phase5r_package_error}")
 
     import_object_package_clicked = st.button(
         "Import Object Package",
