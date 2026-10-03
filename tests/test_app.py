@@ -2,6 +2,7 @@ import json
 import pathlib
 import plotly.graph_objects as go
 import pytest
+import object_package
 import object_package_consumer
 import streamlit_app
 import object_recipe
@@ -119,6 +120,28 @@ def test_active_object_package_json_loads_in_independent_consumer_and_plotly():
     assert list(consumer_package.parts[0].geometry.vertices) == [tuple(vertex) for vertex in legacy_vertices]
     assert list(consumer_package.parts[0].geometry.faces) == [tuple(face) for face in legacy_faces]
     assert list(consumer_package.parts[0].geometry.edges) == [tuple(edge) for edge in legacy_edges]
+
+
+def test_phase5r_zomball_export_uses_canonical_recipe_and_package_pipeline():
+    recipe = json.loads(streamlit_app.PHASE5R_ZOMBALL_RECIPE_PATH.read_text(encoding="utf-8"))
+    expected = object_recipe.build_evaluated_recipe(recipe, streamlit_app.OBJECT_REGISTRY)
+    evaluated = streamlit_app.build_phase5r_zomball_evaluated()
+    serialized = streamlit_app.serialize_phase5r_zomball_package()
+    package = json.loads(serialized)
+    consumer = object_package_consumer.load_package_from_json(serialized)
+    figure = object_package_consumer.build_plotly_figure(consumer)
+
+    assert object_package.evaluated_recipes_equal(evaluated, expected)
+    assert serialized == object_package.serialize_object_package(
+        object_package.export_evaluated_package(expected)
+    )
+    assert serialized == streamlit_app.serialize_phase5r_zomball_package()
+    assert package["object"]["name"] == "ZomBall sentry watch tower"
+    assert [part["id"] for part in package["parts"]] == [part.part_id for part in expected.parts]
+    assert len(package["parts"]) == 25
+    assert len(package["connections"]) == 8
+    assert (consumer.resources.vertices, consumer.resources.faces, consumer.resources.edges) == (200, 300, 300)
+    assert len(figure.data) == 25
 
 
 def test_streamlit_import_object_package_helper_validates_and_previews_without_mutating_object():

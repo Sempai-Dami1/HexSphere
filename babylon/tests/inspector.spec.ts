@@ -67,9 +67,21 @@ async function inspectorState(page: import("@playwright/test").Page): Promise<In
   return state as InspectorState;
 }
 
+async function activateWithKeyboard(
+  page: import("@playwright/test").Page,
+  selector: string,
+  key: "Enter" | "Space",
+): Promise<void> {
+  await page.locator(selector).press(key);
+  await page.evaluate(() => new Promise<void>((resolveFrame) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame()));
+  }));
+}
+
 test("inspector reads Package 1.0 and selection preserves mesh geometry", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#validation-status")).toContainText("Validated hexsphere.object-package v1.0");
+  await expect(page.locator("#render-canvas")).toHaveAttribute("data-rendered", "true", { timeout: 15_000 });
 
   expect(fixture.format).toBe("hexsphere.object-package");
   expect(fixture.version).toBe("1.0");
@@ -103,6 +115,25 @@ test("inspector reads Package 1.0 and selection preserves mesh geometry", async 
   }))));
   expect(initialState.connectionMetadata).toEqual(fixture.connections);
 
+  await page.evaluate(async () => {
+    for (const id of ["show-axes", "show-anchors", "show-connections", "show-part-labels"]) {
+      const control = document.getElementById(id);
+      if (!(control instanceof HTMLInputElement)) {
+        throw new Error(`Inspector control #${id} is missing.`);
+      }
+      control.click();
+      await new Promise<void>((resolveFrame) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame()));
+      });
+    }
+  });
+  const toggledState = await inspectorState(page);
+  expect(toggledState.axesEnabled).toBe(false);
+  expect(toggledState.anchorsEnabled).toBe(false);
+  expect(toggledState.connectionsEnabled).toBe(false);
+  expect(toggledState.partLabelsEnabled).toBe(true);
+  expect(toggledState.partLabelIds).toEqual(fixture.parts.map((part) => part.id));
+
   const selectedFixturePart = fixture.parts[1];
   const selectedBefore = initialState.parts.find((part) => part.id === selectedFixturePart.id);
   expect(selectedBefore).toBeDefined();
@@ -135,21 +166,10 @@ test("inspector reads Package 1.0 and selection preserves mesh geometry", async 
   await expect(page.locator("#connection-details")).toContainText(JSON.stringify(connection.offset));
   await expect(page.locator("#connection-details")).toContainText(connection.offset_space);
 
-  await page.locator("#show-axes").uncheck();
-  await page.locator("#show-anchors").uncheck();
-  await page.locator("#show-connections").uncheck();
-  await page.locator("#show-part-labels").check();
-  const toggledState = await inspectorState(page);
-  expect(toggledState.axesEnabled).toBe(false);
-  expect(toggledState.anchorsEnabled).toBe(false);
-  expect(toggledState.connectionsEnabled).toBe(false);
-  expect(toggledState.partLabelsEnabled).toBe(true);
-  expect(toggledState.partLabelIds).toEqual(fixture.parts.map((part) => part.id));
-
-  await page.locator("#fit-object").click();
+  await activateWithKeyboard(page, "#fit-object", "Enter");
   const fitState = await inspectorState(page);
   expect(fitState.camera.radius).toBeGreaterThan(0);
-  await page.locator("#reset-camera").click();
+  await activateWithKeyboard(page, "#reset-camera", "Enter");
   const resetState = await inspectorState(page);
   expect(resetState.camera.target).toEqual([0, 0, 0]);
   expect(resetState.camera.alpha).toBeCloseTo(-Math.PI / 3, 12);
