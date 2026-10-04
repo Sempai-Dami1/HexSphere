@@ -1,4 +1,6 @@
-# Phase 5R: ZomBall Tower Interchange
+# Phase 5R: ZomBall Tower Interchange — Closure / Recovery Checkpoint
+
+Checkpoint recorded 2026-10-03. Phase 5R is closed; do not restart or reimplement it, and do not begin Phase 5S without a separate request.
 
 ## Scope
 
@@ -24,10 +26,44 @@ Validate the supplied sentry/watch tower as a static, recognizable approximation
 
 Do not change the v0.6 recipe, schemas, evaluator, Package 1.0 contract, independent consumer, Babylon loader/adapter/inspector, Phase 5N fixtures, Phase 5P tests, or legacy OBJ flow. Keep the app bridge exclusive to this named candidate. Stop if a genuine contract/evaluator change appears necessary.
 
-## Current Status
+## Delivered
 
-Implemented a candidate-only Streamlit helper and download button. The helper loads `recipes/phase5r_zomball.json`, evaluates it with `build_evaluated_recipe`, and serializes the evaluated result through the existing Package 1.0 exporter. The active-object export and legacy OBJ paths are unchanged.
+The canonical [recipe](../recipes/phase5r_zomball.json) describes the static 25-part ZomBall sentry/watchtower approximation. The candidate-only Streamlit bridge evaluates that recipe through the existing Object Recipe v0.6 evaluator and `OBJECT_REGISTRY`, then serializes through the canonical Object Package 1.0 exporter. Its dedicated download is a real multi-part export; the active-object single-part Package export and legacy OBJ export remain unchanged.
 
-Added a focused Python test for canonical recipe/package equivalence and a dedicated Playwright round-trip test. The Phase 5R browser test passes, including the exact downloaded bytes through the independent Python consumer/Plotly reference and Babylon Inspector. It verifies 25 ordered parts, 8 connections, 200 vertices, 300 faces, 300 edges, per-part transforms/geometry/bounds, anchors, connections, repeat-download determinism, and a nonblank Babylon render. Anchor and connection overlays are disabled in the browser test to keep software WebGL responsive; inspector metadata and overlay counts remain checked.
+Exact Package 1.0 metrics are **25 parts / 8 connections / 200 vertices / 300 faces / 300 edges**.
 
-Verification after resuming: the focused Phase 5R Playwright round-trip passed against the actual Streamlit download and Babylon viewer; the focused Python Phase 5R test passed; all 257 Python tests passed with `PYTHONUTF8=1`; and the Babylon production build passed with its existing large-bundle advisory. The initial full Python run without UTF-8 mode had four unrelated `UnicodeDecodeError` failures caused by the Windows console encoding; the UTF-8 rerun passed. The earlier complete Playwright run had 12 of 14 tests pass, including Phase 5R and all Phase 5N fixture cases. The unchanged Phase 5P import assertion timed out waiting for its success message, and the existing Inspector test intermittently timed out while toggling overlays. The Phase 5P package import succeeded in a direct replay when waiting for upload commitment and allowing up to 60 seconds for the result. The full Playwright suite and Phase 5N/5P browser regressions were not rerun after resuming; neither protected test nor Babylon application code was changed in this work.
+The dedicated Playwright round-trip test captures actual Streamlit download bytes and validates those same bytes end-to-end:
+
+- The independent Python Package 1.0 consumer loads the downloaded file and builds a Plotly reference. Ordered parts, geometry/topology, transforms, anchors, bounds, connections, resource totals, and repeat-download determinism are checked.
+- Babylon loads those same bytes. Its read-only Inspector verifies provenance, totals, individual meshes/transforms, anchors, and connections. Anchor and connection visual overlays are disabled in the browser run to keep software WebGL responsive; inspector metadata and overlay counts remain validated.
+
+## Browser-Test Synchronization Corrections
+
+Only the two browser tests were synchronized; no production behavior was changed:
+
+- **Phase 5P Streamlit import:** wait for the uploader's package-specific “Remove …” button to appear, confirming the selected file is committed, then click Import and wait for both validation and imported-package status. The result assertions use an explicit 60-second bound for the observed Streamlit processing; no global timeout was raised.
+- **Inspector:** assert initial render completion and capture package/anchor/connection metadata, then disable axes, anchors, and connections overlays early. Wait two animation frames after each checkbox update before further inspector interactions, avoiding unnecessary overlay work in software WebGL. Camera-control keyboard actions also wait for two frames.
+
+## Final Verification
+
+- Phase 5P browser test: **3/3** repeated runs passed.
+- Inspector browser test: **3/3** repeated runs passed.
+- Combined Phase 5P + Inspector run: **2/2** passed.
+- Complete Playwright suite: **14/14** passed, including Phase 5P, Phase 5R, Inspector, all Phase 5N fixtures, malformed-package checks, and final WebGL render.
+- Full Python suite with `PYTHONUTF8=1`: **257 passed**.
+- Babylon TypeScript checks and production build: passed. Vite emitted the existing advisory that the main minified bundle exceeds 500 kB.
+- Diagnostics for both changed browser tests: no errors.
+- `git diff --check`: passed.
+
+## Non-Goals and Boundaries
+
+- Phase 5R is a static, recognizable watchtower approximation and interchange validation, not a general recipe editor, asset-authoring workflow, or change to the recipe/evaluator model.
+- Do not change the canonical recipe, Recipe v0.6 schemas/evaluator, Package 1.0 contract/serializer, independent Python consumer, or Plotly reference behavior as part of this closure.
+- Do not change Babylon's production loader, adapter, renderer, or Inspector implementation; Phase 5R validates their existing read-only behavior.
+- Do not change Phase 5N fixtures, Phase 5P product behavior, active-object single-part export, or legacy OBJ generation.
+- The candidate-specific multi-part interchange excludes app presets, materials, and authoring controls; these are outside the Package 1.0 evaluated-geometry export.
+- No Phase 5S implementation is included or authorized by this checkpoint.
+
+## Recovery State
+
+Immediately before recording this checkpoint, `git status --short` was empty: the verified closure worktree was clean. The latest commits were `1260d15` (“Pase 5R: Final Validation”) and `b1b430e` (“Phase 5R: Complete”). This checkpoint update changes this document only; after saving, expect only `babylon/PHASE5R.md` to be modified, with no untracked test output or production-source changes. Phase 5R implementation and the synchronization-test corrections are already present in the verified commit history/worktree.

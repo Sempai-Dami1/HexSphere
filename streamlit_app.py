@@ -13,6 +13,7 @@ from PIL import Image
 import object_package
 import object_package_consumer
 import object_recipe
+import object_recipe_workbench
 import picture_sphere
 
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
@@ -2920,4 +2921,11 @@ if imported_object_package is not None:
     st.plotly_chart(imported_object_package_figure, width="stretch")
 if st.session_state.attach_unicode_panel:
     render_unicode_panel()
-
+if st.session_state.get("phase5s_workbench_open", False):
+    if st.button("Close Object Recipe Workbench", key="phase5s_close_workbench"):
+        st.session_state["phase5s_workbench_open"] = False
+        st.rerun()
+    object_recipe_workbench.render_recipe_workbench(OBJECT_REGISTRY)
+elif st.button("Open Object Recipe Workbench", key="phase5s_open_workbench"):
+    st.session_state["phase5s_workbench_open"] = True
+    st.rerun()
