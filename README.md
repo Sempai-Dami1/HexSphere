@@ -2,6 +2,10 @@
 
 An interactive Streamlit tool for shaping, rotating, animating, and exporting a faceted hex sphere.
 
+See [Development Best Practices](DEVELOPMENT_BEST_PRACTICES.md) for the
+project's phase workflow, security guidance, validation gates, and recovery
+checkpoints.
+
 ## Run locally
 
 Install `uv`, sync the dependencies, and start the app:
