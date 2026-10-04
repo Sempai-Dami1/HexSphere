@@ -1,0 +1,119 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5T Reusable Pair",
+    "parameters": {},
+    "parts": [
+      {
+        "id": "base",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 2.0,
+          "thickness": 1
+        },
+        "transform": {
+          "position": [0.0, 0.0, 0.0]
+        },
+        "anchors": [
+          {
+            "name": "socket",
+            "parent": "main",
+            "local_position": [0.0, 1.0, 0.0]
+          }
+        ]
+      }
+    ],
+    "components": {
+      "Pair": {
+        "parameters": {
+          "size": 1.0
+        },
+        "parts": [
+          {
+            "id": "lower",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": {
+                "$ref": "component.parameters.size"
+              },
+              "thickness": 1
+            },
+            "anchors": [
+              {
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, 0.5, 0.0]
+              }
+            ]
+          },
+          {
+            "id": "upper",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": {
+                "$ref": "component.parameters.size"
+              },
+              "thickness": 1
+            },
+            "anchors": [
+              {
+                "name": "mount",
+                "parent": "main",
+                "local_position": [0.0, 0.5, 0.0]
+              }
+            ]
+          }
+        ],
+        "connections": [
+          {
+            "id": "join",
+            "part": "upper",
+            "anchor": "mount",
+            "target": {
+              "part": "lower",
+              "anchor": "mount"
+            },
+            "mode": "snap"
+          }
+        ],
+        "exposes": [
+          {
+            "name": "mount",
+            "source": "lower.mount"
+          }
+        ]
+      }
+    },
+    "instances": [
+      {
+        "id": "first",
+        "component": "Pair",
+        "parameters": {
+          "size": 2.0
+        },
+        "transform": {
+          "position": [0.0, 2.0, 0.0]
+        },
+        "connection": {
+          "anchor": "mount",
+          "target": {
+            "part": "base",
+            "anchor": "socket"
+          },
+          "mode": "snap"
+        }
+      },
+      {
+        "id": "second",
+        "component": "Pair",
+        "parameters": {
+          "size": 3.0
+        },
+        "transform": {
+          "position": [0.0, 6.0, 0.0]
+        }
+      }
+    ]
+  }
+}

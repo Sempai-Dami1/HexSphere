@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -60,7 +61,9 @@ def new_object_recipe(
 def is_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> bool:
     """Return whether every recipe field belongs to the lossless guided subset."""
     obj = recipe.get("object")
-    if not isinstance(obj, Mapping) or set(obj) - {"name", "parameters", "parts", "connections"}:
+    if not isinstance(obj, Mapping) or set(obj) - {
+        "name", "parameters", "parts", "connections", "components", "instances"
+    }:
         return False
     if obj.get("parameters", {}) != {}:
         return False
@@ -72,30 +75,25 @@ def is_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
             return all(literal(item) for item in value)
         return False
 
-    for part in obj.get("parts", []):
-        if not isinstance(part, Mapping) or set(part) - {"id", "type", "parameters", "transform", "anchors"}:
-            return False
-        config = registry.get(part.get("type"))
-        if not isinstance(config, Mapping) or not config.get("enabled", True) or config.get("generator") is None:
-            return False
-        if not isinstance(part.get("parameters"), Mapping) or not all(
-            literal(value) for value in part["parameters"].values()
-        ):
-            return False
-        transform = part.get("transform", {})
-        if not isinstance(transform, Mapping) or set(transform) - {"position", "rotation", "scale"}:
-            return False
-        if not all(literal(value) for value in transform.values()):
-            return False
-        for anchor in part.get("anchors", []):
-            if not isinstance(anchor, Mapping) or set(anchor) - {
-                "name", "parent", "local_position", "local_rotation", "inherit_orientation"
-            } or anchor.get("parent") != "main" or not all(
-                literal(value) for key, value in anchor.items() if key != "parent"
-            ):
-                return False
+    def transform_is_guided(transform: Any) -> bool:
+        return (
+            isinstance(transform, Mapping)
+            and not set(transform) - {"position", "rotation", "scale"}
+            and all(literal(value) for value in transform.values())
+        )
 
-    for connection in obj.get("connections", []):
+    def anchors_are_guided(anchors: Any) -> bool:
+        return isinstance(anchors, list) and all(
+            isinstance(anchor, Mapping)
+            and not set(anchor) - {
+                "name", "parent", "local_position", "local_rotation", "inherit_orientation"
+            }
+            and anchor.get("parent") == "main"
+            and all(literal(value) for key, value in anchor.items() if key != "parent")
+            for anchor in anchors
+        )
+
+    def connection_is_guided(connection: Any) -> bool:
         if not isinstance(connection, Mapping) or set(connection) - {
             "id", "part", "anchor", "target", "mode", "offset", "rotation_offset", "offset_space"
         }:
@@ -103,7 +101,149 @@ def is_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> 
         if not all(literal(value) for key, value in connection.items() if key != "target"):
             return False
         target = connection.get("target")
-        if not isinstance(target, Mapping) or set(target) != {"part", "anchor"}:
+        return isinstance(target, Mapping) and set(target) == {"part", "anchor"}
+
+    def registry_part_is_guided(part: Any, component_parameters: Mapping[str, Any] | None = None) -> bool:
+        if not isinstance(part, Mapping) or set(part) - {
+            "id", "type", "parameters", "transform", "anchors"
+        }:
+            return False
+        config = registry.get(part.get("type"))
+        if not isinstance(config, Mapping) or not config.get("enabled", True) or config.get("generator") is None:
+            return False
+        part_parameters = part.get("parameters")
+        if not isinstance(part_parameters, Mapping):
+            return False
+        parameter_metadata = config.get("params", {})
+        for name, value in part_parameters.items():
+            if literal(value):
+                continue
+            if (
+                component_parameters is None
+                or parameter_metadata.get(name, {}).get("type", "slider") not in {"slider", "number"}
+                or not isinstance(value, Mapping)
+                or set(value) != {"$ref"}
+                or not isinstance(value["$ref"], str)
+                or not value["$ref"].startswith("component.parameters.")
+                or value["$ref"].removeprefix("component.parameters.") not in component_parameters
+                or not isinstance(
+                    component_parameters[value["$ref"].removeprefix("component.parameters.")],
+                    (int, float),
+                )
+                or isinstance(
+                    component_parameters[value["$ref"].removeprefix("component.parameters.")],
+                    bool,
+                )
+            ):
+                return False
+        if not transform_is_guided(part.get("transform", {})):
+            return False
+        if not anchors_are_guided(part.get("anchors", [])):
+            return False
+        return True
+
+    if not isinstance(obj.get("parts", []), list) or not all(
+        registry_part_is_guided(part) for part in obj.get("parts", [])
+    ):
+        return False
+    if not isinstance(obj.get("connections", []), list) or not all(
+        connection_is_guided(connection) for connection in obj.get("connections", [])
+    ):
+        return False
+
+    components = obj.get("components", {})
+    if not isinstance(components, Mapping):
+        return False
+    for component in components.values():
+        if not isinstance(component, Mapping) or set(component) - {
+            "parameters", "parts", "connections", "exposes"
+        }:
+            return False
+        parameters = component.get("parameters")
+        component_parts = component.get("parts")
+        exposures = component.get("exposes")
+        if (
+            not isinstance(parameters, Mapping)
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in parameters.values()
+            )
+            or not isinstance(component_parts, list)
+            or not component_parts
+            or not all(registry_part_is_guided(part, parameters) for part in component_parts)
+            or not isinstance(component.get("connections", []), list)
+            or not all(connection_is_guided(connection) for connection in component.get("connections", []))
+            or not isinstance(exposures, list)
+        ):
+            return False
+        part_by_id = {part["id"]: part for part in component_parts}
+        for exposure in exposures:
+            if (
+                not isinstance(exposure, Mapping)
+                or set(exposure) != {"name", "source"}
+                or not isinstance(exposure.get("name"), str)
+                or not isinstance(exposure.get("source"), str)
+            ):
+                return False
+            source_part, separator, source_anchor = exposure["source"].partition(".")
+            if (
+                not separator
+                or source_part not in part_by_id
+                or source_anchor not in {
+                    anchor["name"] for anchor in part_by_id[source_part].get("anchors", [])
+                }
+            ):
+                return False
+
+    instances = obj.get("instances", [])
+    if not isinstance(instances, list):
+        return False
+    root_part_ids = {part["id"] for part in obj.get("parts", [])}
+    for instance in instances:
+        if not isinstance(instance, Mapping) or set(instance) - {
+            "id", "component", "parameters", "transform", "connection"
+        }:
+            return False
+        component = components.get(instance.get("component"))
+        if not isinstance(component, Mapping):
+            return False
+        overrides = instance.get("parameters", {})
+        if (
+            not isinstance(overrides, Mapping)
+            or set(overrides) - set(component["parameters"])
+            or not all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                for value in overrides.values()
+            )
+            or not transform_is_guided(instance.get("transform", {}))
+        ):
+            return False
+        instance_connection = instance.get("connection")
+        if instance_connection is not None:
+            if not isinstance(instance_connection, Mapping) or set(instance_connection) - {
+                "anchor", "target", "mode", "offset", "rotation_offset", "offset_space"
+            }:
+                return False
+            if (
+                not all(literal(value) for key, value in instance_connection.items() if key != "target")
+                or not isinstance(instance_connection.get("target"), Mapping)
+                or set(instance_connection["target"]) != {"part", "anchor"}
+                or instance_connection["target"]["part"] not in root_part_ids
+                or instance_connection.get("anchor") not in {
+                    exposure["name"] for exposure in component["exposes"]
+                }
+            ):
+                return False
+    if instances and any(connection["part"] not in root_part_ids or connection["target"]["part"] not in root_part_ids
+                         for connection in obj.get("connections", [])):
+        return False
+
+    for connection in obj.get("connections", []):
+        if connection["part"] not in root_part_ids or connection["target"]["part"] not in root_part_ids:
             return False
     return True
 
@@ -133,6 +273,7 @@ def _store_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> Non
 
 def _clear_editor_widget_state() -> None:
     prefixes = (
+        "phase5t_",
         "phase5s_recipe_name_",
         _RECIPE_EDITOR_PREFIX,
         "phase5s_selected_part_",
@@ -635,6 +776,832 @@ def _render_guided_editor(recipe: dict[str, Any], registry: Mapping[str, Any]) -
             st.rerun()
 
 
+def _component_anchor_names(component: Mapping[str, Any], part_id: str) -> list[str]:
+    for part in component.get("parts", []):
+        if part["id"] == part_id:
+            return [anchor["name"] for anchor in part.get("anchors", [])]
+    return []
+
+
+def _clone_recipe(recipe: Mapping[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(recipe))
+
+
+def _save_guided_recipe(updated: dict[str, Any], registry: Mapping[str, Any]) -> None:
+    _store_recipe(updated, registry)
+    st.rerun()
+
+
+def _render_component_relationship_controls(
+    recipe: dict[str, Any],
+    registry: Mapping[str, Any],
+    component_id: str,
+    token: str,
+) -> None:
+    component = recipe["object"]["components"][component_id]
+    parts = component["parts"]
+    part_ids = [part["id"] for part in parts]
+    connections = component.get("connections", [])
+    connection_ids = [item["id"] for item in connections]
+    st.markdown("##### Component direct connections")
+    options = [*connection_ids, "Add component connection"]
+    selected_id = st.selectbox(
+        "Component connection", options, key=f"phase5t_connection_choice_{token}"
+    )
+    current = next((item for item in connections if item["id"] == selected_id), None)
+    occupied = {item["part"] for item in connections if item["id"] != selected_id}
+    sources = [
+        part_id for part_id in part_ids
+        if part_id not in occupied or current and part_id == current["part"]
+    ]
+    if sources:
+        with st.form(f"phase5t_connection_form_{token}"):
+            connection_key = f"{token}_{selected_id}"
+            connection_id = st.text_input(
+                "Stable component connection ID",
+                value=current["id"] if current else _next_identifier(connection_ids, "connection"),
+                key=f"phase5t_connection_id_{connection_key}",
+            )
+            source_part = st.selectbox(
+                "Component positioned part",
+                sources,
+                index=sources.index(current["part"]) if current and current["part"] in sources else 0,
+                key=f"phase5t_connection_source_{connection_key}",
+            )
+            targets = [
+                part_id for part_id in part_ids
+                if part_id != source_part and not _would_create_connection_cycle(
+                    connections,
+                    source_part,
+                    part_id,
+                    current["id"] if current else None,
+                )
+            ]
+            target_part = st.selectbox(
+                "Component target part",
+                targets or [""],
+                key=f"phase5t_connection_target_{connection_key}",
+                disabled=not targets,
+            )
+            source_anchors = _component_anchor_names(component, source_part)
+            target_anchors = _component_anchor_names(component, target_part)
+            source_anchor = st.selectbox(
+                "Component positioned anchor",
+                source_anchors or [""],
+                key=f"phase5t_connection_source_anchor_{connection_key}_{source_part}",
+                disabled=not source_anchors,
+            )
+            target_anchor = st.selectbox(
+                "Component target anchor",
+                target_anchors or [""],
+                key=f"phase5t_connection_target_anchor_{connection_key}_{target_part}",
+                disabled=not target_anchors,
+            )
+            mode = st.selectbox(
+                "Component connection mode",
+                ["position", "snap"],
+                index=["position", "snap"].index(current.get("mode", "snap")) if current else 1,
+                key=f"phase5t_connection_mode_{connection_key}",
+            )
+            offset_space = st.selectbox(
+                "Component connection offset space",
+                ["target", "world"],
+                index=["target", "world"].index(current.get("offset_space", "target"))
+                if current else 0,
+                key=f"phase5t_connection_space_{connection_key}",
+            )
+            offset = _vector_inputs(
+                "Component connection offset",
+                current.get("offset", [0, 0, 0]) if current else [0, 0, 0],
+                f"phase5t_connection_offset_{connection_key}",
+            )
+            rotation_offset = _vector_inputs(
+                "Component connection rotation offset",
+                current.get("rotation_offset", [0, 0, 0]) if current else [0, 0, 0],
+                f"phase5t_connection_rotation_{connection_key}",
+            )
+            save_connection = st.form_submit_button(
+                "Save component connection",
+                disabled=not targets or not source_anchors or not target_anchors,
+            )
+            remove_connection = st.form_submit_button(
+                "Remove component connection", disabled=current is None
+            )
+        if save_connection:
+            updated = _clone_recipe(recipe)
+            definition = updated["object"]["components"][component_id]
+            definition["connections"] = [
+                item for item in definition.get("connections", [])
+                if item["id"] != selected_id and item["part"] != source_part
+            ]
+            definition["connections"].append({
+                "id": connection_id,
+                "part": source_part,
+                "anchor": source_anchor,
+                "target": {"part": target_part, "anchor": target_anchor},
+                "mode": mode,
+                "offset": offset,
+                "rotation_offset": rotation_offset,
+                "offset_space": offset_space,
+            })
+            source = next(part for part in definition["parts"] if part["id"] == source_part)
+            source.get("transform", {}).pop("position", None)
+            try:
+                _save_guided_recipe(updated, registry)
+            except object_recipe.RecipeError as exc:
+                st.error(str(exc))
+        if remove_connection and current:
+            updated = _clone_recipe(recipe)
+            definition = updated["object"]["components"][component_id]
+            definition["connections"] = [
+                item for item in definition["connections"] if item["id"] != selected_id
+            ]
+            try:
+                _save_guided_recipe(updated, registry)
+            except object_recipe.RecipeError as exc:
+                st.error(str(exc))
+
+    st.markdown("##### Exposed component anchors")
+    exposures = component["exposes"]
+    exposure_names = [item["name"] for item in exposures]
+    exposure_options = [*exposure_names, "Add exposed anchor"]
+    selected_exposure = st.selectbox(
+        "Exposed anchor", exposure_options, key=f"phase5t_exposure_choice_{token}"
+    )
+    current_exposure = next((item for item in exposures if item["name"] == selected_exposure), None)
+    source_part_id, _, source_anchor_name = (
+        current_exposure["source"].partition(".") if current_exposure else ("", "", "")
+    )
+    used_exposure = any(
+        instance["component"] == component_id
+        and instance.get("connection", {}).get("anchor") == selected_exposure
+        for instance in recipe["object"].get("instances", [])
+    )
+    with st.form(f"phase5t_exposure_form_{token}"):
+        exposure_name = st.text_input(
+            "Exposed anchor name",
+            value=selected_exposure if current_exposure else _next_identifier(exposure_names, "mount"),
+            key=f"phase5t_exposure_name_{token}_{selected_exposure}",
+        )
+        source_part = st.selectbox(
+            "Exposed component part",
+            part_ids,
+            index=part_ids.index(source_part_id) if source_part_id in part_ids else 0,
+            key=f"phase5t_exposure_part_{token}_{selected_exposure}",
+        )
+        anchors = _component_anchor_names(component, source_part)
+        source_anchor = st.selectbox(
+            "Exposed component anchor",
+            anchors or [""],
+            index=anchors.index(source_anchor_name) if source_anchor_name in anchors else 0,
+            key=f"phase5t_exposure_anchor_{token}_{selected_exposure}_{source_part}",
+            disabled=not anchors,
+        )
+        save_exposure = st.form_submit_button("Save exposed anchor", disabled=not anchors)
+        remove_exposure = st.form_submit_button(
+            "Remove exposed anchor", disabled=current_exposure is None or used_exposure
+        )
+    if used_exposure:
+        st.caption("This exposure is used by an instance connection; remove that connection first.")
+    if save_exposure:
+        updated = _clone_recipe(recipe)
+        definition = updated["object"]["components"][component_id]
+        definition["exposes"] = [
+            item for item in definition["exposes"] if item["name"] != selected_exposure
+        ]
+        definition["exposes"].append({
+            "name": exposure_name.strip(),
+            "source": f"{source_part}.{source_anchor}",
+        })
+        if current_exposure and exposure_name.strip() != selected_exposure:
+            for instance in updated["object"].get("instances", []):
+                if (
+                    instance["component"] == component_id
+                    and instance.get("connection", {}).get("anchor") == selected_exposure
+                ):
+                    instance["connection"]["anchor"] = exposure_name.strip()
+        try:
+            _save_guided_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+    if remove_exposure and current_exposure:
+        updated = _clone_recipe(recipe)
+        definition = updated["object"]["components"][component_id]
+        definition["exposes"] = [
+            item for item in definition["exposes"] if item["name"] != selected_exposure
+        ]
+        try:
+            _save_guided_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+
+
+def _render_component_instances(
+    recipe: dict[str, Any],
+    registry: Mapping[str, Any],
+    component_id: str,
+    token: str,
+) -> None:
+    obj = recipe["object"]
+    components = obj["components"]
+    instances = obj["instances"]
+    st.markdown("#### Component instances")
+    if st.button("Add component instance", key=f"phase5t_add_instance_{token}"):
+        updated = _clone_recipe(recipe)
+        all_ids = [part["id"] for part in obj.get("parts", [])] + [
+            instance["id"] for instance in instances
+        ]
+        updated["object"]["instances"].append({
+            "id": _next_identifier(all_ids, "instance"),
+            "component": component_id,
+            "transform": {},
+        })
+        try:
+            _save_guided_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+    if not instances:
+        st.info("Add an instance to reuse a component definition in the assembly.")
+        return
+
+    instance_ids = [instance["id"] for instance in instances]
+    selected_id = st.selectbox(
+        "Instance", instance_ids, key=f"phase5t_instance_choice_{token}"
+    )
+    instance = next(item for item in instances if item["id"] == selected_id)
+    existing_overrides = instance.get("parameters", {})
+    old_connection = instance.get("connection", {})
+    component_options = [
+        name for name, definition in components.items()
+        if set(existing_overrides).issubset(definition["parameters"])
+        and (
+            not old_connection
+            or old_connection.get("anchor") in {
+                exposure["name"] for exposure in definition["exposes"]
+            }
+        )
+    ]
+    selected_component_id = st.selectbox(
+        "Instance component definition",
+        component_options,
+        index=component_options.index(instance["component"]),
+        key=f"phase5t_instance_component_{token}_{selected_id}",
+    )
+    component = components[selected_component_id]
+    key = f"{token}_{selected_id}"
+    st.caption(f"Uses shared component definition: {selected_component_id}.")
+    with st.form(f"phase5t_instance_form_{key}"):
+        instance_id = st.text_input(
+            "Stable instance ID", value=selected_id, key=f"phase5t_instance_id_{key}"
+        )
+        overrides = {}
+        old_overrides = instance.get("parameters", {})
+        for name, default in component["parameters"].items():
+            enabled = st.checkbox(
+                f"Override {name}",
+                value=name in old_overrides,
+                key=f"phase5t_override_enabled_{key}_{name}",
+            )
+            value = st.number_input(
+                f"Instance {name}",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=float(old_overrides.get(name, default)),
+                key=f"phase5t_override_value_{key}_{name}",
+                disabled=not enabled,
+            )
+            if enabled:
+                overrides[name] = value
+        transform = instance.get("transform", {})
+        position = _vector_inputs(
+            "Instance position", transform.get("position", [0, 0, 0]), f"phase5t_i_pos_{key}"
+        )
+        rotation = _vector_inputs(
+            "Instance rotation (degrees)",
+            transform.get("rotation", [0, 0, 0]),
+            f"phase5t_i_rot_{key}",
+        )
+        scale = _vector_inputs(
+            "Instance scale", transform.get("scale", [1, 1, 1]), f"phase5t_i_scale_{key}"
+        )
+        old_connection = instance.get("connection", {})
+        connect = st.checkbox(
+            "Connect exposed anchor to a top-level part",
+            value=bool(old_connection),
+            key=f"phase5t_i_connect_{key}",
+        )
+        exposures = [item["name"] for item in component["exposes"]]
+        root_parts = obj.get("parts", [])
+        root_ids = [part["id"] for part in root_parts]
+        exposed_anchor = st.selectbox(
+            "Instance exposed anchor",
+            exposures or [""],
+            index=exposures.index(old_connection.get("anchor"))
+            if old_connection.get("anchor") in exposures else 0,
+            key=f"phase5t_i_exposure_{key}",
+            disabled=not connect or not exposures,
+        )
+        old_target = old_connection.get("target", {})
+        target_part = st.selectbox(
+            "Instance target part",
+            root_ids or [""],
+            index=root_ids.index(old_target.get("part")) if old_target.get("part") in root_ids else 0,
+            key=f"phase5t_i_target_{key}",
+            disabled=not connect or not root_ids,
+        )
+        target_anchors = _anchor_names(recipe, target_part) if target_part else []
+        target_anchor = st.selectbox(
+            "Instance target anchor",
+            target_anchors or [""],
+            index=target_anchors.index(old_target.get("anchor"))
+            if old_target.get("anchor") in target_anchors else 0,
+            key=f"phase5t_i_target_anchor_{key}_{target_part}",
+            disabled=not connect or not target_anchors,
+        )
+        mode = st.selectbox(
+            "Instance connection mode",
+            ["position", "snap"],
+            index=["position", "snap"].index(old_connection.get("mode", "snap"))
+            if old_connection else 1,
+            key=f"phase5t_i_mode_{key}",
+            disabled=not connect,
+        )
+        offset = _vector_inputs(
+            "Instance connection offset",
+            old_connection.get("offset", [0, 0, 0]),
+            f"phase5t_i_offset_{key}",
+        )
+        rotation_offset = _vector_inputs(
+            "Instance connection rotation offset",
+            old_connection.get("rotation_offset", [0, 0, 0]),
+            f"phase5t_i_rotation_offset_{key}",
+        )
+        offset_space = st.selectbox(
+            "Instance connection offset space",
+            ["target", "world"],
+            index=["target", "world"].index(old_connection.get("offset_space", "target"))
+            if old_connection else 0,
+            key=f"phase5t_i_space_{key}",
+            disabled=not connect,
+        )
+        save_instance = st.form_submit_button(
+            "Save component instance",
+            disabled=connect and (not exposures or not root_ids or not target_anchors),
+        )
+        remove_instance = st.form_submit_button("Remove component instance")
+
+    if save_instance:
+        updated = _clone_recipe(recipe)
+        edited = next(item for item in updated["object"]["instances"] if item["id"] == selected_id)
+        edited["id"] = instance_id
+        edited["component"] = selected_component_id
+        if overrides:
+            edited["parameters"] = overrides
+        else:
+            edited.pop("parameters", None)
+        edited["transform"] = {"position": position, "rotation": rotation, "scale": scale}
+        if connect:
+            edited["connection"] = {
+                "anchor": exposed_anchor,
+                "target": {"part": target_part, "anchor": target_anchor},
+                "mode": mode,
+                "offset": offset,
+                "rotation_offset": rotation_offset,
+                "offset_space": offset_space,
+            }
+        else:
+            edited.pop("connection", None)
+        for connection in updated["object"].get("connections", []):
+            if connection["part"] == selected_id:
+                connection["part"] = instance_id
+            if connection["target"]["part"] == selected_id:
+                connection["target"]["part"] = instance_id
+        try:
+            _save_guided_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+    if remove_instance:
+        updated = _clone_recipe(recipe)
+        updated["object"]["instances"] = [
+            item for item in updated["object"]["instances"] if item["id"] != selected_id
+        ]
+        updated["object"]["connections"] = [
+            item for item in updated["object"].get("connections", [])
+            if item["part"] != selected_id and item["target"]["part"] != selected_id
+        ]
+        try:
+            _save_guided_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+
+
+def _render_component_controls(recipe: dict[str, Any], registry: Mapping[str, Any]) -> None:
+    obj = recipe["object"]
+    components = obj.setdefault("components", {})
+    instances = obj.setdefault("instances", [])
+    token = hashlib.sha256(_recipe_text(recipe).encode("utf-8")).hexdigest()[:12]
+    st.markdown("#### Reusable components and instances")
+    st.caption(
+        "Component definitions own their internal parts, anchors, and connections. "
+        "Instances share that definition and vary only by declared numeric overrides and transforms."
+    )
+
+    if st.button("Add reusable component", key=f"phase5t_add_component_{token}"):
+        config = registry.get("SimpleBlock")
+        if not isinstance(config, Mapping) or config.get("generator") is None:
+            st.error("The SimpleBlock registry generator is unavailable for a new component.")
+            return
+        updated = _clone_recipe(recipe)
+        component_id = _next_identifier(list(components), "component")
+        updated["object"].setdefault("components", {})[component_id] = {
+            "parameters": {},
+            "parts": [{
+                "id": "part_1",
+                "type": "SimpleBlock",
+                "parameters": {
+                    name: metadata["default"] for name, metadata in config.get("params", {}).items()
+                },
+                "anchors": [],
+            }],
+            "connections": [],
+            "exposes": [],
+        }
+        try:
+            _store_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+    if not components:
+        st.info("Add a reusable component to define parts that can be instantiated.")
+        return
+
+    component_ids = list(components)
+    selected_component_id = st.selectbox(
+        "Component definition", component_ids, key=f"phase5t_component_choice_{token}"
+    )
+    component = components[selected_component_id]
+    component_key = f"{token}_{selected_component_id}"
+    referenced = any(instance["component"] == selected_component_id for instance in instances)
+
+    with st.form(f"phase5t_component_form_{component_key}"):
+        new_component_id = st.text_input(
+            "Stable component name",
+            value=selected_component_id,
+            key=f"phase5t_component_name_{component_key}",
+        )
+        defaults = {
+            name: st.number_input(
+                f"Default {name}",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=float(value),
+                key=f"phase5t_component_default_{component_key}_{name}",
+            )
+            for name, value in component["parameters"].items()
+        }
+        new_parameter = st.text_input(
+            "Add numeric component parameter",
+            key=f"phase5t_component_new_param_{component_key}",
+        )
+        new_parameter_default = st.number_input(
+            "New parameter default",
+            min_value=-1_000_000.0,
+            max_value=1_000_000.0,
+            value=1.0,
+            key=f"phase5t_component_new_default_{component_key}",
+        )
+        remove_parameter_name = st.selectbox(
+            "Component parameter to remove",
+            ["No parameter", *component["parameters"]],
+            key=f"phase5t_component_remove_parameter_{component_key}",
+        )
+        save_definition = st.form_submit_button("Save component definition")
+        remove_parameter = st.form_submit_button(
+            "Remove component parameter",
+            disabled=not component["parameters"] or remove_parameter_name == "No parameter",
+        )
+        remove_definition = st.form_submit_button(
+            "Remove component definition", disabled=referenced
+        )
+
+    if save_definition:
+        updated = _clone_recipe(recipe)
+        definitions = updated["object"]["components"]
+        new_name = new_component_id.strip()
+        if not new_name:
+            st.error("A component name is required.")
+            return
+        if new_name != selected_component_id and new_name in definitions:
+            st.error(f"Component name already exists: {new_name}.")
+            return
+        if new_parameter.strip():
+            if new_parameter.strip() in defaults:
+                st.error(f"Component parameter already exists: {new_parameter.strip()}.")
+                return
+            defaults[new_parameter.strip()] = new_parameter_default
+        definition = definitions.pop(selected_component_id)
+        definition["parameters"] = defaults
+        definitions[new_name] = definition
+        for instance in updated["object"].get("instances", []):
+            if instance["component"] == selected_component_id:
+                instance["component"] = new_name
+        try:
+            _store_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+    if remove_parameter and remove_parameter_name != "No parameter":
+        is_referenced = any(
+            value == {"$ref": f"component.parameters.{remove_parameter_name}"}
+            for part in component["parts"]
+            for value in part.get("parameters", {}).values()
+        ) or any(
+            instance["component"] == selected_component_id
+            and remove_parameter_name in instance.get("parameters", {})
+            for instance in instances
+        )
+        if is_referenced:
+            st.error("Remove component-part references and instance overrides before deleting this parameter.")
+        else:
+            updated = _clone_recipe(recipe)
+            updated["object"]["components"][selected_component_id]["parameters"].pop(
+                remove_parameter_name
+            )
+            try:
+                _save_guided_recipe(updated, registry)
+            except object_recipe.RecipeError as exc:
+                st.error(str(exc))
+
+    if remove_definition:
+        updated = _clone_recipe(recipe)
+        updated["object"]["components"].pop(selected_component_id)
+        try:
+            _store_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+    if referenced:
+        st.caption("Remove this component's instances before deleting its definition.")
+
+    component = recipe["object"]["components"][selected_component_id]
+    parts = component["parts"]
+    part_ids = [part["id"] for part in parts]
+    part_options = [*part_ids, "Add component part"]
+    selected_part_id = st.selectbox(
+        "Component part", part_options, key=f"phase5t_component_part_choice_{component_key}"
+    )
+    current_part = next((part for part in parts if part["id"] == selected_part_id), None)
+    registry_types = [
+        name for name, config in registry.items()
+        if config.get("enabled", True) and config.get("generator") is not None
+    ]
+    if not registry_types:
+        st.error("No enabled registry-backed object types are available.")
+        return
+    current_type = current_part["type"] if current_part else (
+        "SimpleBlock" if "SimpleBlock" in registry_types else registry_types[0]
+    )
+    part_token = f"{component_key}_{selected_part_id if current_part else _next_identifier(part_ids, 'part')}"
+    connected_source = any(
+        connection["part"] == selected_part_id for connection in component.get("connections", [])
+    )
+    exposed_in_use = any(
+        instance["component"] == selected_component_id
+        and instance.get("connection", {}).get("anchor") in {
+            exposure["name"] for exposure in component["exposes"]
+            if exposure["source"].partition(".")[0] == selected_part_id
+        }
+        for instance in instances
+    )
+
+    with st.form(f"phase5t_component_part_form_{part_token}"):
+        part_id = st.text_input(
+            "Stable component part ID",
+            value=current_part["id"] if current_part else _next_identifier(part_ids, "part"),
+            key=f"phase5t_component_part_id_{part_token}",
+        )
+        selected_type = st.selectbox(
+            "Component registry object type",
+            registry_types,
+            index=registry_types.index(current_type),
+            key=f"phase5t_component_part_type_{part_token}",
+        )
+        config = registry[selected_type]
+        old_parameters = current_part.get("parameters", {}) if current_part else {}
+        part_parameters = {}
+        for name, metadata in config.get("params", {}).items():
+            old_value = old_parameters.get(name, metadata["default"])
+            old_reference = None
+            if isinstance(old_value, Mapping) and set(old_value) == {"$ref"}:
+                reference = old_value["$ref"]
+                if isinstance(reference, str) and reference.startswith("component.parameters."):
+                    old_reference = reference.removeprefix("component.parameters.")
+            numeric_parameter = metadata.get("type", "slider") in {"slider", "number"}
+            source_options = ["Literal"] + (
+                [f"Component parameter: {key}" for key in component["parameters"]]
+                if numeric_parameter else []
+            )
+            selected_source = (
+                f"Component parameter: {old_reference}"
+                if old_reference in component["parameters"] else "Literal"
+            )
+            source = st.selectbox(
+                f"{metadata['label']} source",
+                source_options,
+                index=source_options.index(selected_source),
+                key=f"phase5t_component_param_source_{part_token}_{name}",
+            )
+            if source.startswith("Component parameter: "):
+                parameter = source.removeprefix("Component parameter: ")
+                part_parameters[name] = {"$ref": f"component.parameters.{parameter}"}
+            else:
+                current_value = metadata["default"] if isinstance(old_value, Mapping) else old_value
+                part_parameters[name] = _parameter_input(
+                    metadata["label"],
+                    metadata,
+                    current_value,
+                    f"phase5t_component_param_{part_token}_{selected_type}_{name}",
+                )
+
+        old_transform = current_part.get("transform", {}) if current_part else {}
+        position = None if connected_source else _vector_inputs(
+            "Component part position",
+            old_transform.get("position", [0, 0, 0]),
+            f"phase5t_component_position_{part_token}",
+        )
+        rotation = _vector_inputs(
+            "Component part rotation (degrees)",
+            old_transform.get("rotation", [0, 0, 0]),
+            f"phase5t_component_rotation_{part_token}",
+        )
+        scale = _vector_inputs(
+            "Component part scale",
+            old_transform.get("scale", [1, 1, 1]),
+            f"phase5t_component_scale_{part_token}",
+        )
+        old_anchors = current_part.get("anchors", []) if current_part else []
+        anchor_options = [anchor["name"] for anchor in old_anchors] + ["Add anchor"]
+        selected_anchor = st.selectbox(
+            "Component part anchor",
+            anchor_options,
+            index=0 if old_anchors else len(anchor_options) - 1,
+            key=f"phase5t_component_anchor_choice_{part_token}",
+        )
+        current_anchor = next(
+            (anchor for anchor in old_anchors if anchor["name"] == selected_anchor), {}
+        )
+        anchor_name = st.text_input(
+            "Component anchor name",
+            value=selected_anchor if selected_anchor != "Add anchor"
+            else _next_identifier([item["name"] for item in old_anchors], "anchor"),
+            key=f"phase5t_component_anchor_name_{part_token}_{selected_anchor}",
+        )
+        edit_anchor = st.checkbox(
+            "Add or update component anchor",
+            value=bool(current_anchor),
+            key=f"phase5t_component_anchor_enabled_{part_token}_{selected_anchor}",
+        )
+        anchor_position = _vector_inputs(
+            "Component anchor local position",
+            current_anchor.get("local_position", [0, 0, 0]),
+            f"phase5t_component_anchor_position_{part_token}_{selected_anchor}",
+        )
+        anchor_rotation = _vector_inputs(
+            "Component anchor local rotation (degrees)",
+            current_anchor.get("local_rotation", [0, 0, 0]),
+            f"phase5t_component_anchor_rotation_{part_token}_{selected_anchor}",
+        )
+        inherit_orientation = st.checkbox(
+            "Component anchor inherits orientation",
+            value=current_anchor.get("inherit_orientation", True),
+            key=f"phase5t_component_anchor_inherit_{part_token}_{selected_anchor}",
+        )
+        save_part = st.form_submit_button("Save component part")
+        remove_part = st.form_submit_button(
+            "Remove component part",
+            disabled=current_part is None or len(parts) <= 1 or exposed_in_use,
+        )
+        remove_anchor = st.form_submit_button(
+            "Remove component anchor",
+            disabled=not current_anchor or exposed_in_use,
+        )
+
+    if save_part:
+        updated = _clone_recipe(recipe)
+        definition = updated["object"]["components"][selected_component_id]
+        updated_part = next(
+            (part for part in definition["parts"] if part["id"] == selected_part_id), None
+        )
+        if updated_part is None:
+            updated_part = {"id": part_id, "type": selected_type, "parameters": {}}
+            definition["parts"].append(updated_part)
+        old_id = updated_part["id"]
+        updated_part.update({"id": part_id, "type": selected_type, "parameters": part_parameters})
+        updated_transform = {"rotation": rotation, "scale": scale}
+        if position is not None:
+            updated_transform["position"] = position
+        updated_part["transform"] = updated_transform
+        if old_id != part_id:
+            for connection in definition.get("connections", []):
+                if connection["part"] == old_id:
+                    connection["part"] = part_id
+                if connection["target"]["part"] == old_id:
+                    connection["target"]["part"] = part_id
+            for exposure in definition.get("exposes", []):
+                source_part, separator, source_anchor = exposure["source"].partition(".")
+                if source_part == old_id:
+                    exposure["source"] = f"{part_id}{separator}{source_anchor}"
+        if edit_anchor and anchor_name.strip():
+            new_anchor = {
+                "name": anchor_name.strip(),
+                "parent": "main",
+                "local_position": anchor_position,
+                "local_rotation": anchor_rotation,
+                "inherit_orientation": inherit_orientation,
+            }
+            anchor_index = next(
+                (index for index, item in enumerate(updated_part.get("anchors", []))
+                 if item["name"] == selected_anchor),
+                None,
+            )
+            if anchor_index is None:
+                updated_part.setdefault("anchors", []).append(new_anchor)
+            else:
+                for connection in definition.get("connections", []):
+                    if connection["part"] == selected_part_id and connection["anchor"] == selected_anchor:
+                        connection["anchor"] = anchor_name.strip()
+                    if (
+                        connection["target"]["part"] == selected_part_id
+                        and connection["target"]["anchor"] == selected_anchor
+                    ):
+                        connection["target"]["anchor"] = anchor_name.strip()
+                for exposure in definition.get("exposes", []):
+                    if exposure["source"] == f"{selected_part_id}.{selected_anchor}":
+                        exposure["source"] = f"{selected_part_id}.{anchor_name.strip()}"
+                updated_part["anchors"][anchor_index] = new_anchor
+        try:
+            _store_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+    if remove_part and current_part:
+        updated = _clone_recipe(recipe)
+        definition = updated["object"]["components"][selected_component_id]
+        definition["parts"] = [part for part in definition["parts"] if part["id"] != selected_part_id]
+        definition["connections"] = [
+            connection for connection in definition.get("connections", [])
+            if connection["part"] != selected_part_id
+            and connection["target"]["part"] != selected_part_id
+        ]
+        definition["exposes"] = [
+            exposure for exposure in definition["exposes"]
+            if exposure["source"].partition(".")[0] != selected_part_id
+        ]
+        try:
+            _store_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+    if remove_anchor and current_anchor:
+        updated = _clone_recipe(recipe)
+        definition = updated["object"]["components"][selected_component_id]
+        target_part = next(part for part in definition["parts"] if part["id"] == selected_part_id)
+        target_part["anchors"] = [
+            anchor for anchor in target_part.get("anchors", [])
+            if anchor["name"] != selected_anchor
+        ]
+        definition["connections"] = [
+            connection for connection in definition.get("connections", [])
+            if not (
+                (connection["part"] == selected_part_id and connection["anchor"] == selected_anchor)
+                or (connection["target"]["part"] == selected_part_id
+                    and connection["target"]["anchor"] == selected_anchor)
+            )
+        ]
+        definition["exposes"] = [
+            exposure for exposure in definition["exposes"]
+            if exposure["source"] != f"{selected_part_id}.{selected_anchor}"
+        ]
+        try:
+            _store_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+    _render_component_relationship_controls(recipe, registry, selected_component_id, component_key)
+    _render_component_instances(recipe, registry, selected_component_id, token)
+
+
 def _evaluate_package(recipe_source: str, registry: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     recipe = _load_v06_recipe(recipe_source)
     evaluated = object_recipe.build_evaluated_recipe(recipe, registry)
@@ -690,6 +1657,7 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
         if checked_before_editor is not None:
             if is_guided_recipe(checked_before_editor, registry):
                 _render_guided_editor(checked_before_editor, registry)
+                _render_component_controls(checked_before_editor, registry)
             else:
                 st.info(
                     "This valid v0.6 recipe contains constructs outside the guided subset. "
