@@ -273,6 +273,7 @@ def _store_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> Non
 
 def _clear_editor_widget_state() -> None:
     prefixes = (
+        "phase5v_",
         "phase5u_",
         "phase5t_",
         "phase5s_recipe_name_",
@@ -1975,6 +1976,272 @@ def _render_replications(recipe: dict[str, Any], registry: Mapping[str, Any]) ->
             st.error(str(exc))
 
 
+def _raster_literal(value: Any) -> bool:
+    if isinstance(value, list):
+        return all(_raster_literal(item) for item in value)
+    return value is None or isinstance(value, (str, bool)) or _replication_numeric(value)
+
+
+def _check_raster_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
+    object_recipe.validate_recipe(recipe)
+    obj = recipe["object"]
+    if any(obj.get(field) for field in ("parameters", "profiles", "components", "instances", "replications")):
+        raise object_recipe.RecipeError("Advanced profile or reuse constructs remain in JSON.")
+    profile = obj.get("profile")
+    if profile is not None and (
+        any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16
+            for value in (profile["width"], profile["height"]))
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in profile["data"])
+        or not any(profile["data"])
+    ):
+        raise object_recipe.RecipeError("Guided profiles require 1-16 dimensions and occupied cells.")
+
+    # Only registry parts are projected for the frozen shape predicate. No
+    # generated-part surrogate is created, saved, or evaluated.
+    shape = _clone_recipe(recipe)
+    for field in ("profile", "profiles", "replications"):
+        shape["object"].pop(field, None)
+    shape["object"]["connections"] = []
+    shape["object"]["parts"] = [part for part in obj["parts"] if "geometry" not in part]
+    if not is_guided_recipe(shape, registry):
+        raise object_recipe.RecipeError("Unrepresented registry fields remain in JSON.")
+    for part in obj["parts"]:
+        if "geometry" not in part:
+            continue
+        geometry = part["geometry"]
+        if (
+            geometry["type"] != "raster_stack"
+            or geometry["profile"] != "object.profile"
+            or set(geometry) - {
+                "type", "profile", "layer_count", "depth", "cell_size", "construction_plane"
+            }
+            or not all(_raster_literal(value) for value in geometry.values())
+            or not all(_raster_literal(value) for value in part.get("transform", {}).values())
+            or any(
+                anchor["parent"] != "main"
+                or not all(_raster_literal(value) for value in anchor.values())
+                for anchor in part.get("anchors", [])
+            )
+        ):
+            raise object_recipe.RecipeError("Advanced raster geometry or relationships remain in JSON.")
+    if any(
+        not all(_raster_literal(value) for key, value in connection.items() if key != "target")
+        for connection in obj.get("connections", [])
+    ):
+        raise object_recipe.RecipeError("Advanced connection values remain in JSON.")
+
+
+def is_raster_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> bool:
+    """Recognize the additive top-level raster subset without adapting geometry."""
+    try:
+        _check_raster_guided_recipe(recipe, registry)
+    except object_recipe.RecipeError:
+        return False
+    return True
+
+
+def raster_profile_candidate(
+    recipe: Mapping[str, Any], registry: Mapping[str, Any],
+    width: int, height: int, data: list[int],
+) -> dict[str, Any]:
+    """Create or edit occupancy; existing profile dimensions are immutable."""
+    _check_raster_guided_recipe(recipe, registry)
+    if any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16
+           for value in (width, height)):
+        raise object_recipe.RecipeError("Guided profile dimensions must be integers from 1 to 16.")
+    existing = recipe["object"].get("profile")
+    if existing is not None and (width, height) != (existing["width"], existing["height"]):
+        raise object_recipe.RecipeError("The guided editor cannot resize an existing profile.")
+    profile = object_recipe.validate_profile({
+        "type": "raster", "width": width, "height": height, "data": data
+    })
+    if not any(profile["data"]):
+        raise object_recipe.RecipeError("Select at least one occupied cell before saving.")
+    updated = _clone_recipe(recipe)
+    updated["object"]["profile"] = profile
+    _check_raster_guided_recipe(updated, registry)
+    return updated
+
+
+def raster_stack_candidate(
+    recipe: Mapping[str, Any], registry: Mapping[str, Any],
+    part_id: str, geometry: Mapping[str, Any], *, creating: bool,
+) -> dict[str, Any]:
+    _check_raster_guided_recipe(recipe, registry)
+    if "profile" not in recipe["object"]:
+        raise object_recipe.RecipeError("Create an occupied root profile before creating a stack.")
+    updated = _clone_recipe(recipe)
+    part = next((item for item in updated["object"]["parts"] if item["id"] == part_id), None)
+    if creating:
+        if part is not None:
+            raise object_recipe.RecipeError(f"Part ID '{part_id}' already exists.")
+        part = {"id": part_id}
+        updated["object"]["parts"].append(part)
+    elif part is None or "geometry" not in part:
+        raise object_recipe.RecipeError(f"Unknown raster stack '{part_id}'; IDs cannot be renamed here.")
+    part["geometry"] = _clone_recipe(geometry)
+    _check_raster_guided_recipe(updated, registry)
+    return updated
+
+
+def remove_raster_stack_candidate(
+    recipe: Mapping[str, Any], registry: Mapping[str, Any], part_id: str,
+) -> dict[str, Any]:
+    _check_raster_guided_recipe(recipe, registry)
+    if not any(part["id"] == part_id and "geometry" in part for part in recipe["object"]["parts"]):
+        raise object_recipe.RecipeError(f"Unknown raster stack '{part_id}'.")
+    if any(
+        connection["part"] == part_id or connection["target"]["part"] == part_id
+        for connection in recipe["object"].get("connections", [])
+    ):
+        raise object_recipe.RecipeError("This stack is referenced by a connection; removal is blocked.")
+    updated = _clone_recipe(recipe)
+    updated["object"]["parts"] = [part for part in updated["object"]["parts"] if part["id"] != part_id]
+    _check_raster_guided_recipe(updated, registry)
+    return updated
+
+
+def _save_raster_recipe(updated: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
+    _check_raster_guided_recipe(updated, registry)
+    st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(updated)
+    for key in (_VALIDATED_SOURCE_KEY, _PACKAGE_JSON_KEY, _SUMMARY_KEY):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any]) -> None:
+    st.subheader("Raster profile and stacks")
+    st.caption(
+        "Width and height are selected at creation and cannot be changed here afterward. "
+        "Imports are never padded, cropped, or silently resized. Advanced raster features, "
+        "registry parts, transforms, anchors, and connections remain editable in JSON."
+    )
+    obj = recipe["object"]
+    profile = obj.get("profile")
+    token = hashlib.sha256(_recipe_text(recipe).encode("utf-8")).hexdigest()[:12]
+    if profile is None:
+        width = st.number_input(
+            "Profile width at creation", min_value=1, max_value=16, value=1,
+            key=f"phase5v_width_{token}",
+        )
+        height = st.number_input(
+            "Profile height at creation", min_value=1, max_value=16, value=1,
+            key=f"phase5v_height_{token}",
+        )
+        draft_key = f"phase5v_dimensions_{token}"
+        dimensions = (width, height)
+        if draft_key in st.session_state and st.session_state[draft_key] != dimensions:
+            for key in list(st.session_state):
+                if key.startswith(f"phase5v_cell_{token}_"):
+                    st.session_state.pop(key)
+            st.info("Creation dimensions changed; the unsaved occupancy grid has been reset.")
+        st.session_state[draft_key] = dimensions
+        data = [0] * (width * height)
+    else:
+        width, height = profile["width"], profile["height"]
+        data = profile["data"]
+        st.caption(f"Profile dimensions: {width} columns x {height} rows (fixed).")
+    consumers = [part["id"] for part in obj["parts"] if "geometry" in part]
+    st.caption("Profile consumers: " + (", ".join(consumers) or "none"))
+    st.caption("Row 0 is the top/high-Y row; columns increase X. The canvas origin is lower-left.")
+    with st.form(f"phase5v_profile_form_{token}"):
+        occupancy = []
+        for row in range(height):
+            for column, cell in enumerate(st.columns(width)):
+                occupancy.append(int(cell.checkbox(
+                    f"Cell row {row} column {column}",
+                    value=bool(data[row * width + column]),
+                    key=f"phase5v_cell_{token}_{row}_{column}",
+                )))
+        save_profile = st.form_submit_button(
+            "Save raster occupancy" if profile is not None else "Create raster profile"
+        )
+    if save_profile:
+        try:
+            updated = raster_profile_candidate(recipe, registry, width, height, occupancy)
+            _save_raster_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+    if profile is None:
+        return
+
+    stacks = [part for part in obj["parts"] if "geometry" in part]
+    selected = st.selectbox(
+        "Raster stack to edit", ["Create new stack", *(part["id"] for part in stacks)],
+        key=f"phase5v_stack_choice_{token}",
+    )
+    current = next((part for part in stacks if part["id"] == selected), None)
+    geometry = current["geometry"] if current else {}
+    key = f"{token}_{selected}"
+    with st.form(f"phase5v_stack_form_{key}"):
+        if current:
+            part_id = current["id"]
+            st.caption(f"Stack ID: {part_id} (fixed; rename through explicit JSON only).")
+        else:
+            part_id = st.text_input(
+                "New raster stack ID", value=_next_identifier(_part_ids(recipe), "stack"),
+                key=f"phase5v_stack_id_{key}",
+            )
+        layers = st.number_input(
+            "Stack layer count", min_value=2, max_value=128,
+            value=geometry.get("layer_count", 2), key=f"phase5v_layers_{key}",
+        )
+        depth = st.number_input(
+            "Stack depth", min_value=0.01, max_value=1000.0,
+            value=float(geometry.get("depth", 1.0)), key=f"phase5v_depth_{key}",
+        )
+        store_cell_size = st.checkbox(
+            "Store explicit cell size", value="cell_size" in geometry or current is None,
+            key=f"phase5v_store_cell_{key}",
+        )
+        cell_size = geometry.get("cell_size", [1.0, 1.0])
+        cell_width = st.number_input(
+            "Raster cell width", min_value=0.01, max_value=100.0, value=float(cell_size[0]),
+            key=f"phase5v_cell_width_{key}",
+        )
+        cell_height = st.number_input(
+            "Raster cell height", min_value=0.01, max_value=100.0, value=float(cell_size[1]),
+            key=f"phase5v_cell_height_{key}",
+        )
+        store_plane = st.checkbox(
+            "Store explicit construction plane", value="construction_plane" in geometry,
+            key=f"phase5v_store_plane_{key}",
+        )
+        planes = ["xy", "yz", "zx"]
+        plane = st.selectbox(
+            "Stack construction plane", planes,
+            index=planes.index(geometry.get("construction_plane", "xy")),
+            key=f"phase5v_plane_{key}",
+        )
+        st.caption(
+            "Unchecked optional fields are omitted: cell size defaults to [1,1], plane to XY. "
+            "Check the corresponding box to store your inputs. YZ stacks along +X; ZX along +Y."
+        )
+        save_stack = st.form_submit_button("Save raster stack" if current else "Create raster stack")
+        remove_stack = st.form_submit_button("Remove raster stack", disabled=current is None)
+    if save_stack:
+        edited_geometry = {
+            "type": "raster_stack", "profile": "object.profile",
+            "layer_count": layers, "depth": depth,
+        }
+        if store_cell_size:
+            edited_geometry["cell_size"] = [cell_width, cell_height]
+        if store_plane:
+            edited_geometry["construction_plane"] = plane
+        try:
+            updated = raster_stack_candidate(
+                recipe, registry, part_id, edited_geometry, creating=current is None
+            )
+            _save_raster_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+    if remove_stack and current:
+        try:
+            _save_raster_recipe(remove_raster_stack_candidate(recipe, registry, current["id"]), registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+
+
 def _evaluate_package(recipe_source: str, registry: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     recipe = _load_v06_recipe(recipe_source)
     evaluated = object_recipe.build_evaluated_recipe(recipe, registry)
@@ -2032,8 +2299,12 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 _render_guided_editor(checked_before_editor, registry)
                 _render_component_controls(checked_before_editor, registry)
                 _render_replications(checked_before_editor, registry)
+                if is_raster_guided_recipe(checked_before_editor, registry):
+                    _render_raster_controls(checked_before_editor, registry)
             elif is_replication_guided_recipe(checked_before_editor, registry):
                 _render_replications(checked_before_editor, registry)
+            elif is_raster_guided_recipe(checked_before_editor, registry):
+                _render_raster_controls(checked_before_editor, registry)
             else:
                 st.info(
                     "This valid v0.6 recipe contains constructs outside the guided subset. "

@@ -1,0 +1,26 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5V Raster Stack",
+    "parameters": {},
+    "profile": {
+      "type": "raster",
+      "width": 3,
+      "height": 2,
+      "data": [1, 0, 0, 1, 1, 0]
+    },
+    "parts": [
+      {
+        "id": "stack",
+        "geometry": {
+          "type": "raster_stack",
+          "profile": "object.profile",
+          "layer_count": 2,
+          "depth": 2.0,
+          "cell_size": [1.0, 1.0]
+        }
+      }
+    ]
+  }
+}
