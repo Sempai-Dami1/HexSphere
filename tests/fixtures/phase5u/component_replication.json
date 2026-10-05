@@ -1,0 +1,40 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Phase 5U Component Replication",
+    "parameters": {},
+    "parts": [],
+    "components": {
+      "Block": {
+        "parameters": {"size": 3.0},
+        "parts": [
+          {
+            "id": "block",
+            "type": "SimpleBlock",
+            "parameters": {
+              "cube_size": {"$ref": "instance.parameters.size"},
+              "thickness": 1
+            }
+          }
+        ],
+        "exposes": []
+      }
+    },
+    "replications": [
+      {
+        "id": "row",
+        "component": "Block",
+        "count": 2,
+        "pattern": "linear",
+        "parameters": {"size": 3.0},
+        "step": [6.0, 0.0, 0.0],
+        "transform": {
+          "position": [0.0, 0.0, 0.0],
+          "rotation": [0.0, 0.0, 0.0],
+          "scale": [1.0, 1.0, 1.0]
+        }
+      }
+    ]
+  }
+}

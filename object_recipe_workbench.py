@@ -273,6 +273,7 @@ def _store_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> Non
 
 def _clear_editor_widget_state() -> None:
     prefixes = (
+        "phase5u_",
         "phase5t_",
         "phase5s_recipe_name_",
         _RECIPE_EDITOR_PREFIX,
@@ -1602,6 +1603,378 @@ def _render_component_controls(recipe: dict[str, Any], registry: Mapping[str, An
     _render_component_instances(recipe, registry, selected_component_id, token)
 
 
+def _replication_numeric(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and abs(value) <= object_recipe.MAX_ABS_NUMBER
+    )
+
+
+def _instance_geometry_names(component: Mapping[str, Any]) -> set[str]:
+    names = set()
+    for part in component.get("parts", []):
+        for value in part.get("parameters", {}).values():
+            if (
+                isinstance(value, Mapping)
+                and set(value) == {"$ref"}
+                and isinstance(value["$ref"], str)
+                and value["$ref"].startswith("instance.parameters.")
+            ):
+                names.add(value["$ref"].removeprefix("instance.parameters."))
+    return names
+
+
+def _check_replication_guided_recipe(
+    recipe: Mapping[str, Any], registry: Mapping[str, Any]
+) -> None:
+    obj = recipe["object"]
+    components = obj.get("components", {})
+    # This copy is only a shape check against the frozen subset, never an
+    # evaluation adapter or a recipe committed to session state.
+    shape = _clone_recipe(recipe)
+    shape["object"].pop("replications", None)
+    for name, component in components.items():
+        required = _instance_geometry_names(component)
+        if required and any(
+            instance["component"] == name for instance in obj.get("instances", [])
+        ):
+            raise object_recipe.RecipeError(
+                f"Component '{name}' uses instance bindings and ordinary instances; keep it in JSON."
+            )
+        for part_index, part in enumerate(component.get("parts", [])):
+            metadata = registry.get(part.get("type"), {}).get("params", {})
+            for field, value in part.get("parameters", {}).items():
+                if not (
+                    isinstance(value, Mapping)
+                    and set(value) == {"$ref"}
+                    and isinstance(value["$ref"], str)
+                    and value["$ref"].startswith("instance.parameters.")
+                ):
+                    continue
+                parameter = value["$ref"].removeprefix("instance.parameters.")
+                if (
+                    metadata.get(field, {}).get("type", "slider") not in {"slider", "number"}
+                    or field not in metadata
+                    or not _replication_numeric(component["parameters"].get(parameter))
+                ):
+                    raise object_recipe.RecipeError(
+                        f"Unsupported instance geometry binding: {name}.{part['id']}.{field}."
+                    )
+                shape["object"]["components"][name]["parts"][part_index]["parameters"][field] = {
+                    "$ref": f"component.parameters.{parameter}"
+                }
+    if not is_guided_recipe(shape, registry):
+        raise object_recipe.RecipeError(
+            "This recipe contains fields outside the replication guided subset; keep editing JSON."
+        )
+    for replication in obj.get("replications", []):
+        pattern_fields = {"step"} if replication["pattern"] == "linear" else {
+            "center", "radius", "start_angle", "angle_step"
+        }
+        if set(replication) - {
+            "id", "component", "count", "pattern", "parameters", "transform", *pattern_fields
+        }:
+            raise object_recipe.RecipeError(
+                f"Replication '{replication['id']}' has unrepresented or inactive-pattern fields."
+            )
+        component = components.get(replication["component"])
+        if component is None:
+            raise object_recipe.RecipeError(f"Unknown component: {replication['component']}.")
+        required = _instance_geometry_names(component)
+        values = replication.get("parameters", {})
+        for parameter in sorted(required):
+            if parameter not in values or not _replication_numeric(values[parameter]):
+                raise object_recipe.RecipeError(
+                    f"Replication '{replication['id']}' requires an explicit numeric '{parameter}' value."
+                )
+        if set(values) - required:
+            raise object_recipe.RecipeError(
+                f"Replication '{replication['id']}' has unused parameter entries; keep editing JSON."
+            )
+        transform = replication.get("transform", {})
+        if set(transform) - {"position", "rotation", "scale"}:
+            raise object_recipe.RecipeError("Unsupported replication transform.")
+        for field, value in {**transform, **{
+            key: replication[key] for key in pattern_fields if key in replication
+        }}.items():
+            vector = field in {"position", "rotation", "scale", "step", "center"}
+            valid = (
+                isinstance(value, list) and len(value) == 3
+                and all(_replication_numeric(item) for item in value)
+            ) if vector else _replication_numeric(value)
+            if not valid:
+                raise object_recipe.RecipeError(
+                    f"Replication '{replication['id']}' has an unsupported literal {field}."
+                )
+
+
+def is_replication_guided_recipe(
+    recipe: Mapping[str, Any], registry: Mapping[str, Any]
+) -> bool:
+    """Recognize the additive subset without changing the legacy 5T predicate."""
+    try:
+        _check_replication_guided_recipe(recipe, registry)
+    except object_recipe.RecipeError:
+        return False
+    return True
+
+
+def bind_replication_geometry(
+    recipe: Mapping[str, Any],
+    registry: Mapping[str, Any],
+    component_id: str,
+    part_id: str,
+    field: str,
+    parameter: str,
+    confirmed_values: Mapping[str, float],
+) -> dict[str, Any]:
+    """Build a validated opt-in transaction; never mutate existing source data."""
+    _check_replication_guided_recipe(recipe, registry)
+    obj = recipe["object"]
+    if any(item["component"] == component_id for item in obj.get("instances", [])):
+        raise object_recipe.RecipeError(
+            f"Component '{component_id}' is used by an ordinary instance; opt-in is blocked."
+        )
+    component = obj["components"][component_id]
+    part = next(item for item in component["parts"] if item["id"] == part_id)
+    metadata = registry[part["type"]].get("params", {}).get(field)
+    if (
+        metadata is None
+        or metadata.get("type", "slider") not in {"slider", "number"}
+        or not _replication_numeric(component["parameters"].get(parameter))
+    ):
+        raise object_recipe.RecipeError("Select a declared numeric parameter and numeric geometry field.")
+    old_value = part["parameters"].get(field)
+    if (
+        isinstance(old_value, Mapping)
+        and old_value.get("$ref", "").startswith("instance.parameters.")
+        and old_value != {"$ref": f"instance.parameters.{parameter}"}
+    ):
+        raise object_recipe.RecipeError("Rebinding an existing instance field requires explicit JSON editing.")
+    updated = _clone_recipe(recipe)
+    updated["object"]["components"][component_id]["parts"][
+        component["parts"].index(part)
+    ]["parameters"][field] = {"$ref": f"instance.parameters.{parameter}"}
+    for item in updated["object"].get("replications", []):
+        if item["component"] == component_id:
+            if item["id"] not in confirmed_values or not _replication_numeric(confirmed_values[item["id"]]):
+                raise object_recipe.RecipeError(
+                    f"Replication '{item['id']}' requires a confirmed numeric '{parameter}' value."
+                )
+            item.setdefault("parameters", {})[parameter] = confirmed_values[item["id"]]
+    _check_replication_guided_recipe(updated, registry)
+    return object_recipe.validate_recipe(updated)
+
+
+def _save_replication_recipe(updated: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
+    _check_replication_guided_recipe(updated, registry)
+    checked = object_recipe.validate_recipe(updated)
+    st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(checked)
+    for key in (_VALIDATED_SOURCE_KEY, _PACKAGE_JSON_KEY, _SUMMARY_KEY):
+        st.session_state.pop(key, None)
+    st.rerun()
+
+
+def _render_replication_bindings(
+    recipe: dict[str, Any], registry: Mapping[str, Any], token: str
+) -> None:
+    components = recipe["object"].get("components", {})
+    if not components:
+        st.info("Prepare a reusable component in the legacy editor or JSON before adding replication.")
+        return
+    component_id = st.selectbox(
+        "Replication binding component", list(components), key=f"phase5u_binding_component_{token}"
+    )
+    component = components[component_id]
+    st.caption(f"Declared defaults (initial candidates only): {component['parameters']}")
+    if any(
+        item["component"] == component_id for item in recipe["object"].get("instances", [])
+    ):
+        st.info("This component has ordinary instances. Opt-in is blocked; no consumers will be migrated.")
+        return
+    part_id = st.selectbox(
+        "Replication binding part", [part["id"] for part in component["parts"]],
+        key=f"phase5u_binding_part_{token}_{component_id}",
+    )
+    part = next(item for item in component["parts"] if item["id"] == part_id)
+    fields = [
+        name for name, meta in registry[part["type"]].get("params", {}).items()
+        if meta.get("type", "slider") in {"slider", "number"}
+    ]
+    parameters = [name for name, value in component["parameters"].items() if _replication_numeric(value)]
+    if not fields or not parameters:
+        st.info("Declare a numeric component parameter in JSON or the legacy editor before opting in.")
+        return
+    field = st.selectbox(
+        "Replication geometry field", fields, key=f"phase5u_binding_field_{token}_{part_id}"
+    )
+    parameter = st.selectbox(
+        "Instance-scope parameter", parameters, key=f"phase5u_binding_parameter_{token}_{part_id}"
+    )
+    consumers = [
+        item for item in recipe["object"].get("replications", []) if item["component"] == component_id
+    ]
+    st.caption(
+        f"Old source: {part['parameters'].get(field, 'registry default')}. "
+        f"Proposed source: instance.parameters.{parameter}. "
+        f"Affected replications: {', '.join(item['id'] for item in consumers) or 'none'}."
+    )
+    with st.form(f"phase5u_binding_form_{token}_{component_id}_{part_id}_{field}_{parameter}"):
+        confirmed = st.checkbox("Confirm instance-scope geometry binding")
+        values = {}
+        for item in consumers:
+            value = st.number_input(
+                f"Opt-in saved {item['id']} {parameter}",
+                min_value=-1_000_000.0, max_value=1_000_000.0,
+                value=float(item.get("parameters", {}).get(parameter, component["parameters"][parameter])),
+            )
+            if st.checkbox(f"Confirm saved {item['id']} {parameter}"):
+                values[item["id"]] = value
+        if st.form_submit_button("Save instance-scope binding"):
+            if not confirmed:
+                st.error("Confirm the instance-scope binding before saving.")
+            else:
+                try:
+                    updated = bind_replication_geometry(
+                        recipe, registry, component_id, part_id, field, parameter, values
+                    )
+                    _save_replication_recipe(updated, registry)
+                except object_recipe.RecipeError as exc:
+                    st.error(str(exc))
+
+
+def _render_replications(recipe: dict[str, Any], registry: Mapping[str, Any]) -> None:
+    token = hashlib.sha256(_recipe_text(recipe).encode("utf-8")).hexdigest()[:12]
+    st.markdown("#### Replication geometry bindings")
+    st.caption(
+        "Opt-in changes only the selected field. Each replication stores its own confirmed value; "
+        "later component defaults never rewrite it. Structural component/root-part editing remains in JSON."
+    )
+    _render_replication_bindings(recipe, registry, token)
+    components = recipe["object"].get("components", {})
+    if not components:
+        return
+    st.markdown("#### Component replications")
+    replications = recipe["object"].get("replications", [])
+    selected = st.selectbox(
+        "Replication", [item["id"] for item in replications] + ["Add replication"],
+        key=f"phase5u_replication_{token}",
+    )
+    current = next((item for item in replications if item["id"] == selected), None)
+    component_id = st.selectbox(
+        "Replication component", list(components),
+        index=list(components).index(current["component"]) if current else 0,
+        key=f"phase5u_component_{token}_{selected}",
+    )
+    if current and current["component"] != component_id:
+        st.info("Changing a replication's component requires explicit JSON editing; no values are discarded.")
+        return
+    pattern = st.selectbox(
+        "Replication pattern", ["linear", "radial"],
+        index=["linear", "radial"].index(current["pattern"]) if current else 0,
+        key=f"phase5u_pattern_{token}_{selected}",
+    )
+    key = f"{token}_{selected}_{component_id}_{pattern}"
+    required = _instance_geometry_names(components[component_id])
+    all_ids = [
+        item["id"] for group in ("parts", "instances", "replications")
+        for item in recipe["object"].get(group, [])
+    ]
+    with st.form(f"phase5u_replication_form_{key}"):
+        replication_id = st.text_input(
+            "Stable replication ID", value=current["id"] if current else _next_identifier(all_ids, "replication")
+        )
+        count = st.number_input(
+            "Replication count", min_value=1, max_value=64, value=current["count"] if current else 2
+        )
+        values = {}
+        for name in sorted(required):
+            values[name] = st.number_input(
+                f"Saved replication {name}", min_value=-1_000_000.0, max_value=1_000_000.0,
+                value=float(current["parameters"][name] if current else components[component_id]["parameters"][name]),
+            )
+        confirm_values = True if current or not required else st.checkbox(
+            "Confirm explicit saved replication values"
+        )
+        transform = current.get("transform", {}) if current else {}
+        position = _vector_inputs("Replication base position", transform.get("position", [0, 0, 0]), f"phase5u_pos_{key}")
+        rotation = _vector_inputs("Replication rotation (degrees)", transform.get("rotation", [0, 0, 0]), f"phase5u_rot_{key}")
+        scale = _vector_inputs("Replication scale", transform.get("scale", [1, 1, 1]), f"phase5u_scale_{key}")
+        pattern_fields = {}
+        if pattern == "linear":
+            pattern_fields["step"] = _vector_inputs(
+                "Replication step", current.get("step", [0, 0, 0]) if current else [0, 0, 0],
+                f"phase5u_step_{key}",
+            )
+        else:
+            st.caption("Radial center replaces base position; each copy also advances yaw by its angle.")
+            pattern_fields["center"] = _vector_inputs(
+                "Radial center", current.get("center", [0, 0, 0]) if current else [0, 0, 0],
+                f"phase5u_center_{key}",
+            )
+            for name, label, default in (
+                ("radius", "Radial radius", 1.0), ("start_angle", "Radial start angle (degrees)", 0.0)
+            ):
+                pattern_fields[name] = st.number_input(
+                    label, min_value=-1_000_000.0, max_value=1_000_000.0,
+                    value=float(current.get(name, default) if current else default),
+                )
+            explicit_angle = st.checkbox(
+                "Store explicit radial angle step", value=bool(current and "angle_step" in current)
+            )
+            angle = st.number_input(
+                "Radial angle step (degrees)", min_value=-1_000_000.0, max_value=1_000_000.0,
+                value=float(current.get("angle_step", 360.0 / count) if current else 360.0 / count),
+            )
+            if explicit_angle:
+                pattern_fields["angle_step"] = angle
+        switching = bool(current and pattern != current["pattern"])
+        confirm_switch = st.checkbox(
+            "Confirm removal of previous pattern fields", disabled=not switching
+        )
+        save = st.form_submit_button("Save replication")
+        remove = st.form_submit_button("Remove replication", disabled=current is None)
+    if save:
+        if not replication_id.strip():
+            st.error("A stable replication ID is required.")
+        elif not confirm_values:
+            st.error("Confirm the explicit saved replication values before creation.")
+        elif switching and not confirm_switch:
+            st.error("Confirm removal of previous pattern fields before switching pattern.")
+        else:
+            updated = _clone_recipe(recipe)
+            items = updated["object"].setdefault("replications", [])
+            edited = next((item for item in items if item["id"] == selected), None)
+            if edited is None:
+                edited = {}
+                items.append(edited)
+            else:
+                for field in ("step", "center", "radius", "start_angle", "angle_step"):
+                    edited.pop(field, None)
+            edited.update(
+                id=replication_id, component=component_id, count=count, pattern=pattern,
+                transform={"position": position, "rotation": rotation, "scale": scale},
+                **pattern_fields,
+            )
+            if required:
+                edited["parameters"] = values
+            try:
+                _save_replication_recipe(updated, registry)
+            except object_recipe.RecipeError as exc:
+                st.error(str(exc))
+    if remove and current:
+        updated = _clone_recipe(recipe)
+        updated["object"]["replications"] = [
+            item for item in updated["object"]["replications"] if item["id"] != selected
+        ]
+        try:
+            _save_replication_recipe(updated, registry)
+        except object_recipe.RecipeError as exc:
+            st.error(str(exc))
+
+
 def _evaluate_package(recipe_source: str, registry: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     recipe = _load_v06_recipe(recipe_source)
     evaluated = object_recipe.build_evaluated_recipe(recipe, registry)
@@ -1658,6 +2031,9 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             if is_guided_recipe(checked_before_editor, registry):
                 _render_guided_editor(checked_before_editor, registry)
                 _render_component_controls(checked_before_editor, registry)
+                _render_replications(checked_before_editor, registry)
+            elif is_replication_guided_recipe(checked_before_editor, registry):
+                _render_replications(checked_before_editor, registry)
             else:
                 st.info(
                     "This valid v0.6 recipe contains constructs outside the guided subset. "
