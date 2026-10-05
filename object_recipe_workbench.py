@@ -259,6 +259,11 @@ def _load_v06_recipe(source: str | bytes) -> dict[str, Any]:
     return recipe
 
 
+def _invalidate_evaluated_result() -> None:
+    for key in (_VALIDATED_SOURCE_KEY, _PACKAGE_JSON_KEY, _SUMMARY_KEY):
+        st.session_state.pop(key, None)
+
+
 def _store_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
     checked = object_recipe.validate_recipe(recipe)
     if not is_guided_recipe(checked, registry):
@@ -266,9 +271,7 @@ def _store_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> Non
             "This recipe uses constructs outside the guided editor. Keep editing it in the validated JSON editor."
         )
     st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(checked)
-    st.session_state.pop(_VALIDATED_SOURCE_KEY, None)
-    st.session_state.pop(_PACKAGE_JSON_KEY, None)
-    st.session_state.pop(_SUMMARY_KEY, None)
+    _invalidate_evaluated_result()
 
 
 def _clear_editor_widget_state() -> None:
@@ -1773,8 +1776,7 @@ def _save_replication_recipe(updated: Mapping[str, Any], registry: Mapping[str, 
     _check_replication_guided_recipe(updated, registry)
     checked = object_recipe.validate_recipe(updated)
     st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(checked)
-    for key in (_VALIDATED_SOURCE_KEY, _PACKAGE_JSON_KEY, _SUMMARY_KEY):
-        st.session_state.pop(key, None)
+    _invalidate_evaluated_result()
     st.rerun()
 
 
@@ -2104,8 +2106,7 @@ def remove_raster_stack_candidate(
 def _save_raster_recipe(updated: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
     _check_raster_guided_recipe(updated, registry)
     st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(updated)
-    for key in (_VALIDATED_SOURCE_KEY, _PACKAGE_JSON_KEY, _SUMMARY_KEY):
-        st.session_state.pop(key, None)
+    _invalidate_evaluated_result()
     st.rerun()
 
 
@@ -2258,9 +2259,11 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
 
     with st.expander("Object Recipe Workbench — Recipe v0.6", expanded=True):
         st.caption(
-            "Create a reusable formal Object Recipe. This is separate from the app-settings recipe "
-            "and the active-object single-part export."
+            "The Object Recipe is the source of truth. Guided and advanced edits change that source; "
+            "evaluation creates separate Package 1.0 data for preview and export. This Workbench is "
+            "separate from the app-settings recipe and active-object single-part export."
         )
+        st.subheader("1. Start or author a recipe")
         uploaded_recipe = st.file_uploader(
             "Import Object Recipe v0.6 JSON",
             type=["json"],
@@ -2276,17 +2279,13 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             else:
                 st.session_state[_RECIPE_SOURCE_KEY] = uploaded_source
                 _clear_editor_widget_state()
-                st.session_state.pop(_VALIDATED_SOURCE_KEY, None)
-                st.session_state.pop(_PACKAGE_JSON_KEY, None)
-                st.session_state.pop(_SUMMARY_KEY, None)
+                _invalidate_evaluated_result()
                 st.success("Validated v0.6 recipe JSON loaded.")
 
         if new_col.button("Start new guided recipe", key="phase5s_new_recipe"):
             st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(new_object_recipe(registry))
             _clear_editor_widget_state()
-            st.session_state.pop(_VALIDATED_SOURCE_KEY, None)
-            st.session_state.pop(_PACKAGE_JSON_KEY, None)
-            st.session_state.pop(_SUMMARY_KEY, None)
+            _invalidate_evaluated_result()
 
         source_before_editor = st.session_state[_RECIPE_SOURCE_KEY]
         checked_before_editor = None
@@ -2296,14 +2295,23 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             pass
         if checked_before_editor is not None:
             if is_guided_recipe(checked_before_editor, registry):
+                st.subheader("Guided authoring")
+                st.caption(
+                    "Use the controls for supported recipe constructs. Advanced constructs remain "
+                    "in the source JSON and are not rewritten by guided controls."
+                )
                 _render_guided_editor(checked_before_editor, registry)
                 _render_component_controls(checked_before_editor, registry)
                 _render_replications(checked_before_editor, registry)
                 if is_raster_guided_recipe(checked_before_editor, registry):
                     _render_raster_controls(checked_before_editor, registry)
             elif is_replication_guided_recipe(checked_before_editor, registry):
+                st.subheader("Guided authoring")
+                st.caption("Replication controls are available; unsupported recipe data remains in JSON.")
                 _render_replications(checked_before_editor, registry)
             elif is_raster_guided_recipe(checked_before_editor, registry):
+                st.subheader("Guided authoring")
+                st.caption("Raster controls are available; unsupported recipe data remains in JSON.")
                 _render_raster_controls(checked_before_editor, registry)
             else:
                 st.info(
@@ -2311,6 +2319,12 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                     "Its full data remains available through the JSON editor below."
                 )
 
+        st.divider()
+        st.subheader("2. Advanced source editing")
+        st.caption(
+            "Edit the complete Object Recipe v0.6 here, including valid constructs without guided controls. "
+            "Applying edits updates the source recipe; it does not create or edit a Package 1.0."
+        )
         editor_key = (
             _RECIPE_EDITOR_PREFIX
             + hashlib.sha256(source_before_editor.encode("utf-8")).hexdigest()[:12]
@@ -2329,9 +2343,7 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             apply_json_edits = st.form_submit_button("Apply JSON edits")
         if apply_json_edits:
             st.session_state[_RECIPE_SOURCE_KEY] = recipe_source
-            st.session_state.pop(_VALIDATED_SOURCE_KEY, None)
-            st.session_state.pop(_PACKAGE_JSON_KEY, None)
-            st.session_state.pop(_SUMMARY_KEY, None)
+            _invalidate_evaluated_result()
             st.rerun()
         schema_valid = None
         try:
@@ -2350,6 +2362,7 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 schema_valid["object"]["name"].lower(),
             ).strip("_") or "object_recipe"
 
+        st.caption("Recipe download: exports the validated source Object Recipe v0.6 JSON.")
         st.download_button(
             "Export Object Recipe v0.6",
             data=recipe_source,
@@ -2358,6 +2371,13 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             on_click="ignore",
             disabled=not can_export_recipe,
             key="phase5s_export_recipe",
+        )
+
+        st.divider()
+        st.subheader("3. Validate and evaluate")
+        st.caption(
+            "Evaluation uses the current editor text. Package output is available only for the exact "
+            "source that successfully evaluates; changing the source makes the previous result stale."
         )
         validate_clicked = st.button(
             "Validate, evaluate, and preview",
@@ -2373,9 +2393,7 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 st.session_state[_SUMMARY_KEY] = summary
             except (object_recipe.RecipeError, object_package.ObjectPackageError,
                     object_package_consumer.ConsumerPackageError) as exc:
-                st.session_state.pop(_VALIDATED_SOURCE_KEY, None)
-                st.session_state.pop(_PACKAGE_JSON_KEY, None)
-                st.session_state.pop(_SUMMARY_KEY, None)
+                _invalidate_evaluated_result()
                 st.error(f"Recipe evaluation/export failed: {exc}")
 
         result_is_current = (
@@ -2384,6 +2402,12 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             and _SUMMARY_KEY in st.session_state
         )
         if result_is_current:
+            st.divider()
+            st.subheader("4. Evaluated Package 1.0 and preview")
+            st.caption(
+                "This package is evaluated interchange data, not an editable recipe. The Plotly preview "
+                "interprets the same validated package that is offered for download."
+            )
             summary = st.session_state[_SUMMARY_KEY]
             resources = summary["resources"]
             part_label = "part" if summary["part_count"] == 1 else "parts"
@@ -2409,4 +2433,9 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 key="phase5s_plotly_preview",
             )
         elif can_export_recipe:
-            st.info("Validate and evaluate this recipe to enable its Package 1.0 export and Plotly preview.")
+            st.divider()
+            st.subheader("4. Evaluated Package 1.0 and preview")
+            st.info(
+                "No current evaluated result. Validate and evaluate this exact recipe source to enable "
+                "Package 1.0 download and preview."
+            )
