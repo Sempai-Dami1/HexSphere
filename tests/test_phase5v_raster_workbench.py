@@ -141,10 +141,10 @@ def test_ui_creates_profile_and_stack_without_resizing():
     assert not test.exception
     element(test.number_input, "Profile width at creation").set_value(3).run()
     element(test.number_input, "Profile height at creation").set_value(2).run()
-    assert not any(cell.value for cell in test.checkbox if cell.label.startswith("Cell row"))
-    element(test.checkbox, "Cell row 0 column 0").check()
-    element(test.checkbox, "Cell row 1 column 0").check()
-    element(test.checkbox, "Cell row 1 column 1").check()
+    assert not any(cell.value for cell in test.checkbox if cell.label.startswith("Cell "))
+    element(test.checkbox, "Cell A A").check()
+    element(test.checkbox, "Cell B A").check()
+    element(test.checkbox, "Cell B B").check()
     assert source(test) == recipe
     element(test.button, "Create raster profile").click().run()
     assert not test.exception
@@ -165,13 +165,13 @@ def test_ui_render_draft_failure_and_package_invalidation():
     element(test.button, "Validate, evaluate, and preview").click().run()
     package = test.session_state["phase5s_package_json"]
     for cell in test.checkbox:
-        if cell.label.startswith("Cell row"):
+        if cell.label.startswith("Cell "):
             cell.uncheck()
     element(test.button, "Save raster occupancy").click().run()
     assert test.error and not test.exception
     assert source(test) == recipe
     assert test.session_state["phase5s_package_json"] == package
-    element(test.checkbox, "Cell row 0 column 0").check()
+    element(test.checkbox, "Cell A A").check()
     element(test.button, "Save raster occupancy").click().run()
     assert source(test)["object"]["profile"]["data"] == [1, 0, 0, 0, 0, 0]
     assert "phase5s_package_json" not in test.session_state
@@ -307,7 +307,7 @@ def test_advanced_valid_imports_stay_lossless_json_only(advanced):
     test = app(recipe)
     assert not test.exception
     assert source(test) == recipe
-    assert not any(cell.label.startswith("Cell row") for cell in test.checkbox)
+    assert not any(cell.label.startswith("Cell ") for cell in test.checkbox)
     assert any("outside the guided subset" in message.value for message in test.info)
 
 
@@ -331,6 +331,7 @@ def test_ui_optional_omissions_fixed_id_and_draft_no_mutation():
     element(test.selectbox, "Stack construction plane").select("yz")
     element(test.button, "Save raster stack").click().run()
     expected["object"]["parts"][0]["geometry"]["construction_plane"] = "yz"
+    expected["object"]["parts"][0]["transform"] = {"position": [0.0, 0.0, 0.5]}
     assert source(test) == expected
     element(test.selectbox, "Raster stack to edit").select("stack").run()
     element(test.button, "Remove raster stack").click().run()
@@ -341,14 +342,14 @@ def test_ui_optional_omissions_fixed_id_and_draft_no_mutation():
 def test_ui_maximum_grid_and_creation_dimension_reset():
     recipe = workbench.new_object_recipe(REGISTRY)
     test = app(recipe)
-    element(test.checkbox, "Cell row 0 column 0").check().run()
+    element(test.checkbox, "Cell A A").check().run()
     element(test.number_input, "Profile width at creation").set_value(16).run()
     element(test.number_input, "Profile height at creation").set_value(16).run()
-    cells = [cell for cell in test.checkbox if cell.label.startswith("Cell row")]
+    cells = [cell for cell in test.checkbox if cell.label.startswith("Cell ")]
     assert len(cells) == 256 and not any(cell.value for cell in cells)
     assert source(test) == recipe
-    element(test.checkbox, "Cell row 15 column 15").check()
-    element(test.button, "Create raster profile").click().run()
+    element(test.checkbox, "Cell P P").check()
+    element(test.button, "Create raster profile").click().run(timeout=10)
     assert not test.exception
     profile = source(test)["object"]["profile"]
     assert (profile["width"], profile["height"]) == (16, 16)
@@ -363,7 +364,7 @@ def test_json_source_replacement_rekeys_grid_and_preserves_dimensions():
     element(test.text_area, "Formal Object Recipe v0.6 JSON").set_value(json.dumps(replacement))
     element(test.button, "Apply JSON edits").click().run()
     assert not test.exception
-    cells = [cell for cell in test.checkbox if cell.label.startswith("Cell row")]
+    cells = [cell for cell in test.checkbox if cell.label.startswith("Cell ")]
     assert len(cells) == 1 and cells[0].value
     assert source(test) == replacement
 
@@ -412,7 +413,7 @@ def test_integral_float_profiles_not_silently_normalized(field, value):
     test = app(recipe)
     assert not test.exception
     assert source(test) == recipe
-    assert not any(cell.label.startswith("Cell row") for cell in test.checkbox)
+    assert not any(cell.label.startswith("Cell ") for cell in test.checkbox)
 
 
 def test_aggregate_mesh_budget_surfaces_real_evaluation_error():

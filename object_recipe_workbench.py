@@ -58,6 +58,43 @@ def new_object_recipe(
     }
 
 
+def new_raster_only_recipe(
+    width: int = 1, height: int = 1, name: str = "New Raster Object",
+) -> dict[str, Any]:
+    if any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16
+           for value in (width, height)):
+        raise object_recipe.RecipeError("Raster-only creation dimensions must be integers from 1 to 16.")
+    data = [0] * (width * height)
+    data[-width] = 1
+    return {
+        "format": object_recipe.RECIPE_FORMAT,
+        "version": object_recipe.RECIPE_VERSION_V06,
+        "object": {
+            "name": name,
+            "parameters": {},
+            "profile": {"type": "raster", "width": width, "height": height, "data": data},
+            "parts": [{
+                "id": "stack_1",
+                "geometry": {
+                    "type": "raster_stack",
+                    "profile": "object.profile",
+                    "layer_count": 2,
+                    "depth": 1.0,
+                },
+                "transform": {"position": [-0.5, -0.5, 0.0]},
+            }],
+        },
+    }
+
+
+def _is_raster_only_recipe(recipe: Mapping[str, Any]) -> bool:
+    parts = recipe.get("object", {}).get("parts", [])
+    return bool(parts) and all(
+        "geometry" in part and part["geometry"].get("type") == "raster_stack"
+        for part in parts
+    )
+
+
 def is_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str, Any]) -> bool:
     """Return whether every recipe field belongs to the lossless guided subset."""
     obj = recipe.get("object")
@@ -279,6 +316,9 @@ def _clear_editor_widget_state() -> None:
         "phase5v_",
         "phase5u_",
         "phase5t_",
+        "phase5x_raster_",
+        "phase5x_dhorz_",
+        "phase5x_dvert_",
         "phase5s_recipe_name_",
         _RECIPE_EDITOR_PREFIX,
         "phase5s_selected_part_",
@@ -363,6 +403,7 @@ def _parameter_input(
     current: Any,
     key: str,
 ) -> Any:
+    number_format = metadata.get("format")
     parameter_type = metadata.get("type", "slider")
     if parameter_type == "toggle":
         return st.checkbox(label, value=bool(current), key=key)
@@ -380,8 +421,12 @@ def _parameter_input(
             kwargs["max_value"] = float(metadata["max"])
         if "step" in metadata:
             kwargs["step"] = float(metadata["step"])
-        if "format" in metadata:
-            kwargs["format"] = metadata["format"]
+        if number_format is not None:
+            if number_format.endswith("%%"):
+                kwargs["format"] = number_format[:-2]
+                label = f"{label} (%)"
+            else:
+                kwargs["format"] = number_format
         return st.number_input(label, **kwargs)
     raise object_recipe.RecipeError(f"Registry parameter type is not supported by the guided editor: {parameter_type}.")
 
@@ -439,6 +484,14 @@ def _render_guided_editor(recipe: dict[str, Any], registry: Mapping[str, Any]) -
     )
     part_key = f"{recipe_token}_{selected_part if current_part else f'new_{_next_identifier(ids, "part")}'}"
     existing_type = current_part["type"] if current_part else registry_types[0]
+    selected_type = st.selectbox(
+        "Registry object type",
+        registry_types,
+        index=registry_types.index(existing_type),
+        key=f"phase5s_part_type_{part_key}",
+    )
+    config = registry[selected_type]
+    old_parameters = current_part.get("parameters", {}) if current_part else {}
 
     with st.form("phase5s_part_form"):
         part_id = st.text_input(
@@ -446,14 +499,6 @@ def _render_guided_editor(recipe: dict[str, Any], registry: Mapping[str, Any]) -
             value=current_part["id"] if current_part else _next_identifier(ids, "part"),
             key=f"phase5s_part_id_{part_key}",
         )
-        selected_type = st.selectbox(
-            "Registry object type",
-            registry_types,
-            index=registry_types.index(existing_type),
-            key=f"phase5s_part_type_{part_key}",
-        )
-        config = registry[selected_type]
-        old_parameters = current_part.get("parameters", {}) if current_part else {}
         parameters = {}
         for name, metadata in config.get("params", {}).items():
             parameters[name] = _parameter_input(
@@ -2110,12 +2155,89 @@ def _save_raster_recipe(updated: Mapping[str, Any], registry: Mapping[str, Any])
     st.rerun()
 
 
+_RASTER_PLANE_AXES = {"xy": (0, 1), "yz": (1, 2), "zx": (2, 0)}
+
+
+def _raster_plane_center(
+    vertices: list[tuple[float, float, float]], plane: str,
+) -> tuple[float, float]:
+    horizontal_axis, vertical_axis = _RASTER_PLANE_AXES[plane]
+    return tuple(
+        (min(vertex[axis] for vertex in vertices) + max(vertex[axis] for vertex in vertices)) / 2.0
+        for axis in (horizontal_axis, vertical_axis)
+    )
+
+
+def _evaluated_anchor_options(
+    evaluated: object_recipe.EvaluatedRecipe, excluded_part_id: str | None = None,
+) -> list[tuple[str, tuple[float, float, float]]]:
+    return [
+        (f"{part.part_id}.{anchor.name}", anchor.position)
+        for part in evaluated.evaluated_parts
+        if part.part_id != excluded_part_id
+        for anchor in part.anchors
+    ]
+
+
+def _apply_raster_stack_placement(
+    recipe: Mapping[str, Any],
+    registry: Mapping[str, Any],
+    part_id: str,
+    geometry: Mapping[str, Any],
+    *,
+    creating: bool,
+    plane: str,
+    mode: str,
+    d_horz: float,
+    d_vert: float,
+    anchor_position: tuple[float, float, float] | None = None,
+) -> dict[str, Any]:
+    updated = raster_stack_candidate(recipe, registry, part_id, geometry, creating=creating)
+    if any(connection["part"] == part_id for connection in updated["object"].get("connections", [])):
+        raise object_recipe.RecipeError(
+            "This stack's position is controlled by a connection; edit its placement through that relationship."
+        )
+
+    evaluated = object_recipe.build_evaluated_recipe(updated, registry)
+    mesh = next(part for part in evaluated.parts if part.part_id == part_id)
+    current_center = _raster_plane_center(mesh.vertices, plane)
+    horizontal_axis, vertical_axis = _RASTER_PLANE_AXES[plane]
+    reference = anchor_position if mode == "Centered on anchor" else None
+    if mode == "Centered on anchor" and reference is None:
+        reference = (0.0, 0.0, 0.0)
+    if mode == "Absolute":
+        target_center = (d_horz, d_vert)
+    else:
+        target_center = (
+            d_horz + (reference[horizontal_axis] if reference else 0.0),
+            d_vert + (reference[vertical_axis] if reference else 0.0),
+        )
+
+    part = next(part for part in updated["object"]["parts"] if part["id"] == part_id)
+    transform = part.get("transform", {})
+    delta_horz = target_center[0] - current_center[0]
+    delta_vert = target_center[1] - current_center[1]
+    if "position" in transform or delta_horz or delta_vert:
+        position = list(transform.get("position", [0.0, 0.0, 0.0]))
+        position[horizontal_axis] += delta_horz
+        position[vertical_axis] += delta_vert
+        transform["position"] = position
+        part["transform"] = transform
+    _check_raster_guided_recipe(updated, registry)
+    return updated
+
+
 def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any]) -> None:
     st.subheader("Raster profile and stacks")
+    if _is_raster_only_recipe(recipe):
+        st.caption(
+            "Raster-Only Recipe: the raster profile and generated stack are the complete geometry source. "
+            "No registry geometry object is used."
+        )
     st.caption(
         "Width and height are selected at creation and cannot be changed here afterward. "
-        "Imports are never padded, cropped, or silently resized. Advanced raster features, "
-        "registry parts, transforms, anchors, and connections remain editable in JSON."
+        "Imports are never padded, cropped, or silently resized. Named profiles and advanced "
+        "raster features remain JSON-only."
     )
     obj = recipe["object"]
     profile = obj.get("profile")
@@ -2146,12 +2268,21 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     st.caption("Profile consumers: " + (", ".join(consumers) or "none"))
     st.caption("Row 0 is the top/high-Y row; columns increase X. The canvas origin is lower-left.")
     with st.form(f"phase5v_profile_form_{token}"):
-        occupancy = []
+        occupancy: list[int] = []
+        header = st.columns(width + 1)
+        for column in range(width):
+            label = chr(ord("A") + column)
+            header[column + 1].caption(f"Col {label}")
         for row in range(height):
-            for column, cell in enumerate(st.columns(width)):
-                occupancy.append(int(cell.checkbox(
-                    f"Cell row {row} column {column}",
+            row_label = chr(ord("A") + row)
+            cells = st.columns(width + 1)
+            cells[0].caption(f"Row {row_label}")
+            for column in range(width):
+                column_label = chr(ord("A") + column)
+                occupancy.append(int(cells[column + 1].checkbox(
+                    f"Cell {row_label} {column_label}",
                     value=bool(data[row * width + column]),
+                    label_visibility="hidden",
                     key=f"phase5v_cell_{token}_{row}_{column}",
                 )))
         save_profile = st.form_submit_button(
@@ -2174,6 +2305,66 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     current = next((part for part in stacks if part["id"] == selected), None)
     geometry = current["geometry"] if current else {}
     key = f"{token}_{selected}"
+    planes = ["xy", "yz", "zx"]
+    plane_key = f"phase5v_plane_{key}"
+    plane = st.selectbox(
+        "Stack construction plane", planes,
+        index=planes.index(geometry.get("construction_plane", "xy")),
+        key=plane_key,
+    )
+    store_plane = st.checkbox(
+        "Store explicit construction plane",
+        value="construction_plane" in geometry or current is None,
+        key=f"phase5v_store_plane_{key}",
+    )
+
+    placement_eval = None
+    placement_error = None
+    try:
+        placement_eval = object_recipe.build_evaluated_recipe(recipe, registry)
+    except object_recipe.RecipeError as exc:
+        placement_error = str(exc)
+    if placement_error:
+        st.error(f"Raster placement references are unavailable: {placement_error}")
+    anchors = _evaluated_anchor_options(placement_eval, current["id"] if current else None) if placement_eval else []
+    anchor_positions = dict(anchors)
+    mode_key = f"phase5x_raster_placement_mode_{key}"
+    mode = st.selectbox(
+        "Raster placement mode",
+        ["Absolute", "Centered on axis", "Centered on anchor"],
+        index=1,
+        key=mode_key,
+    )
+    anchor_choice = None
+    if mode == "Centered on anchor" and anchors:
+        anchor_choice = st.selectbox(
+            "Placement anchor",
+            [name for name, _position in anchors],
+            index=0,
+            key=f"phase5x_raster_anchor_{key}",
+        )
+    elif mode == "Centered on anchor":
+        st.info("No other-part anchors are available; placement will be centered on the axis.")
+
+    center_seed = (0.0, 0.0)
+    if current and placement_eval:
+        evaluated_mesh = next(part for part in placement_eval.parts if part.part_id == current["id"])
+        center_seed = _raster_plane_center(evaluated_mesh.vertices, plane)
+    anchor_position = anchor_positions.get(anchor_choice) if anchor_choice else None
+    if mode == "Centered on anchor" and anchor_position:
+        center_seed = (
+            center_seed[0] - anchor_position[_RASTER_PLANE_AXES[plane][0]],
+            center_seed[1] - anchor_position[_RASTER_PLANE_AXES[plane][1]],
+        )
+    axis_labels = {
+        "xy": ("X", "Y"), "yz": ("Y", "Z"), "zx": ("Z", "X"),
+    }[plane]
+    connected_source = bool(current) and any(
+        connection["part"] == current["id"] for connection in obj.get("connections", [])
+    )
+    if connected_source:
+        st.info("This stack's position is solved from its connection; placement controls are disabled.")
+
     with st.form(f"phase5v_stack_form_{key}"):
         if current:
             part_id = current["id"]
@@ -2204,21 +2395,28 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
             "Raster cell height", min_value=0.01, max_value=100.0, value=float(cell_size[1]),
             key=f"phase5v_cell_height_{key}",
         )
-        store_plane = st.checkbox(
-            "Store explicit construction plane", value="construction_plane" in geometry,
-            key=f"phase5v_store_plane_{key}",
+        st.caption(
+            f"dHorz follows {axis_labels[0]} and dVert follows {axis_labels[1]}. "
+            "Positioning targets the occupied mesh center; existing transforms are preserved."
         )
-        planes = ["xy", "yz", "zx"]
-        plane = st.selectbox(
-            "Stack construction plane", planes,
-            index=planes.index(geometry.get("construction_plane", "xy")),
-            key=f"phase5v_plane_{key}",
+        d_horz = st.number_input(
+            f"dHorz ({axis_labels[0]})", value=float(center_seed[0]),
+            key=f"phase5x_dhorz_{key}_{mode}_{plane}_{anchor_choice or 'axis'}",
+            disabled=connected_source,
+        )
+        d_vert = st.number_input(
+            f"dVert ({axis_labels[1]})", value=float(center_seed[1]),
+            key=f"phase5x_dvert_{key}_{mode}_{plane}_{anchor_choice or 'axis'}",
+            disabled=connected_source,
         )
         st.caption(
             "Unchecked optional fields are omitted: cell size defaults to [1,1], plane to XY. "
-            "Check the corresponding box to store your inputs. YZ stacks along +X; ZX along +Y."
+            "A non-XY plane is stored automatically. YZ stacks along +X; ZX along +Y."
         )
-        save_stack = st.form_submit_button("Save raster stack" if current else "Create raster stack")
+        save_stack = st.form_submit_button(
+            "Save raster stack" if current else "Create raster stack",
+            disabled=connected_source,
+        )
         remove_stack = st.form_submit_button("Remove raster stack", disabled=current is None)
     if save_stack:
         edited_geometry = {
@@ -2227,11 +2425,13 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
         }
         if store_cell_size:
             edited_geometry["cell_size"] = [cell_width, cell_height]
-        if store_plane:
+        if store_plane or plane != "xy":
             edited_geometry["construction_plane"] = plane
         try:
-            updated = raster_stack_candidate(
-                recipe, registry, part_id, edited_geometry, creating=current is None
+            updated = _apply_raster_stack_placement(
+                recipe, registry, part_id, edited_geometry,
+                creating=current is None, plane=plane, mode=mode,
+                d_horz=d_horz, d_vert=d_vert, anchor_position=anchor_position,
             )
             _save_raster_recipe(updated, registry)
         except object_recipe.RecipeError as exc:
@@ -2252,6 +2452,42 @@ def _evaluate_package(recipe_source: str, registry: Mapping[str, Any]) -> tuple[
     return package_json, object_package_consumer.describe_package(consumer)
 
 
+def _add_visual_anchor_traces(figure: Any, package: object_package_consumer.ConsumerPackage, size: float) -> None:
+    import plotly.graph_objects as go
+
+    half = size / 2.0
+    triangles = (
+        (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7),
+        (0, 1, 5), (0, 5, 4), (1, 2, 6), (1, 6, 5),
+        (2, 3, 7), (2, 7, 6), (3, 0, 4), (3, 4, 7),
+    )
+    for part in package.parts:
+        for anchor in part.anchors:
+            x, y, z = anchor.position
+            vertices = (
+                (x - half, y - half, z - half), (x + half, y - half, z - half),
+                (x + half, y + half, z - half), (x - half, y + half, z - half),
+                (x - half, y - half, z + half), (x + half, y - half, z + half),
+                (x + half, y + half, z + half), (x - half, y + half, z + half),
+            )
+            figure.add_trace(go.Mesh3d(
+                x=[vertex[0] for vertex in vertices],
+                y=[vertex[1] for vertex in vertices],
+                z=[vertex[2] for vertex in vertices],
+                i=[face[0] for face in triangles],
+                j=[face[1] for face in triangles],
+                k=[face[2] for face in triangles],
+                name=f"Anchor {part.part_id}.{anchor.name}",
+                hovertext=f"{part.part_id}.{anchor.name}",
+                hoverinfo="text",
+                color="red",
+                opacity=0.35,
+                flatshading=True,
+                showscale=False,
+                showlegend=False,
+            ))
+
+
 def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
     """Render the formal recipe editor without touching app-settings or active-object state."""
     if _RECIPE_SOURCE_KEY not in st.session_state:
@@ -2270,6 +2506,24 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             key="phase5s_recipe_upload",
         )
         upload_col, new_col = st.columns(2)
+        new_recipe_mode = st.selectbox(
+            "New recipe mode",
+            ["Standard Guided Recipe", "Raster-Only Recipe"],
+            key="phase5x_new_recipe_mode",
+        )
+        raster_width = raster_height = 1
+        if new_recipe_mode == "Raster-Only Recipe":
+            width_col, height_col = st.columns(2)
+            raster_width = width_col.number_input(
+                "Raster-Only profile width at creation",
+                min_value=1, max_value=16, value=1, step=1,
+                key="phase5x_new_raster_width",
+            )
+            raster_height = height_col.number_input(
+                "Raster-Only profile height at creation",
+                min_value=1, max_value=16, value=1, step=1,
+                key="phase5x_new_raster_height",
+            )
         if upload_col.button("Load uploaded recipe", disabled=uploaded_recipe is None, key="phase5s_load_recipe"):
             try:
                 uploaded_source = uploaded_recipe.getvalue().decode("utf-8")
@@ -2283,7 +2537,12 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 st.success("Validated v0.6 recipe JSON loaded.")
 
         if new_col.button("Start new guided recipe", key="phase5s_new_recipe"):
-            st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(new_object_recipe(registry))
+            new_recipe = (
+                new_raster_only_recipe(int(raster_width), int(raster_height))
+                if new_recipe_mode == "Raster-Only Recipe"
+                else new_object_recipe(registry)
+            )
+            st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(new_recipe)
             _clear_editor_widget_state()
             _invalidate_evaluated_result()
 
@@ -2427,8 +2686,23 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 key="phase5s_export_package",
             )
             package = object_package_consumer.load_package_from_json(st.session_state[_PACKAGE_JSON_KEY])
+            show_anchors = st.checkbox(
+                "Show visual anchors",
+                key="phase5x_show_visual_anchors",
+            )
+            anchor_cube_size = 2
+            if show_anchors:
+                anchor_cube_size = st.selectbox(
+                    "Visual anchor cube size",
+                    [2, 4],
+                    format_func=lambda value: f"{value} x {value} x {value}",
+                    key="phase5x_visual_anchor_size",
+                )
+            figure = object_package_consumer.build_plotly_figure(package)
+            if show_anchors:
+                _add_visual_anchor_traces(figure, package, anchor_cube_size)
             st.plotly_chart(
-                object_package_consumer.build_plotly_figure(package),
+                figure,
                 width="stretch",
                 key="phase5s_plotly_preview",
             )

@@ -122,9 +122,9 @@ test("Native raster edits change topology and depth in real package downloads", 
       if (variant === "depth") expectedSource.object.parts[0].geometry.depth = 3;
       if (variant === "mask") {
         await expectSource(expectedSource);
-        await workbench.getByText("Cell row 0 column 1", { exact: true }).click();
-        await expect(workbench.getByRole("checkbox", { name: "Cell row 0 column 1", exact: true }))
-          .toBeChecked();
+        const occupancyCell = workbench.getByRole("checkbox", { name: "Cell A B", exact: true });
+        await occupancyCell.check({ force: true });
+        await expect(occupancyCell).toBeChecked();
         await workbench.getByRole("button", { name: "Save raster occupancy", exact: true }).click();
         expectedSource.object.profile.data[1] = 1;
       }
