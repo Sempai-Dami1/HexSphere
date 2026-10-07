@@ -1,0 +1,453 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Small Wooden Watchtower",
+    "parameters": {},
+    "parts": [
+      {
+        "id": "deck",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            4.0,
+            4.0,
+            0.3
+          ]
+        },
+        "anchors": [
+          {
+            "name": "corner_sw",
+            "parent": "main",
+            "local_position": [
+              -0.4,
+              -0.4,
+              -0.5
+            ],
+            "local_rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inherit_orientation": true
+          },
+          {
+            "name": "corner_se",
+            "parent": "main",
+            "local_position": [
+              0.4,
+              -0.4,
+              -0.5
+            ],
+            "local_rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inherit_orientation": true
+          }
+        ]
+      },
+      {
+        "id": "post_sw",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.3,
+            0.3,
+            5.2
+          ],
+          "position": [
+            -1.6,
+            -1.6,
+            2.6
+          ]
+        },
+        "anchors": [
+          {
+            "name": "tip",
+            "parent": "main",
+            "local_position": [
+              0.0,
+              0.0,
+              0.5
+            ],
+            "local_rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inherit_orientation": true
+          }
+        ]
+      },
+      {
+        "id": "post_se",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.3,
+            0.3,
+            5.2
+          ],
+          "position": [
+            1.6,
+            -1.6,
+            2.6
+          ]
+        },
+        "anchors": [
+          {
+            "name": "tip",
+            "parent": "main",
+            "local_position": [
+              0.0,
+              0.0,
+              0.5
+            ],
+            "local_rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inherit_orientation": true
+          }
+        ]
+      },
+      {
+        "id": "post_ne",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.3,
+            0.3,
+            5.2
+          ],
+          "position": [
+            1.6,
+            1.6,
+            2.6
+          ]
+        },
+        "anchors": [
+          {
+            "name": "tip",
+            "parent": "main",
+            "local_position": [
+              0.0,
+              0.0,
+              0.5
+            ],
+            "local_rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inherit_orientation": true
+          }
+        ]
+      },
+      {
+        "id": "post_nw",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.3,
+            0.3,
+            5.2
+          ],
+          "position": [
+            -1.6,
+            1.6,
+            2.6
+          ]
+        },
+        "anchors": [
+          {
+            "name": "tip",
+            "parent": "main",
+            "local_position": [
+              0.0,
+              0.0,
+              0.5
+            ],
+            "local_rotation": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inherit_orientation": true
+          }
+        ]
+      },
+      {
+        "id": "brace_south",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            3.2,
+            0.16,
+            0.16
+          ],
+          "position": [
+            0.0,
+            -1.6,
+            2.5
+          ]
+        }
+      },
+      {
+        "id": "brace_east",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.16,
+            3.2,
+            0.16
+          ],
+          "position": [
+            1.6,
+            0.0,
+            2.5
+          ]
+        }
+      },
+      {
+        "id": "brace_north",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            3.2,
+            0.16,
+            0.16
+          ],
+          "position": [
+            0.0,
+            1.6,
+            2.5
+          ]
+        }
+      },
+      {
+        "id": "brace_west",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.16,
+            3.2,
+            0.16
+          ],
+          "position": [
+            -1.6,
+            0.0,
+            2.5
+          ]
+        }
+      },
+      {
+        "id": "rail_south",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            3.2,
+            0.18,
+            0.18
+          ],
+          "position": [
+            0.0,
+            -1.6,
+            5.11
+          ]
+        }
+      },
+      {
+        "id": "rail_east",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.18,
+            3.2,
+            0.18
+          ],
+          "position": [
+            1.6,
+            0.0,
+            5.11
+          ]
+        }
+      },
+      {
+        "id": "rail_north",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            3.2,
+            0.18,
+            0.18
+          ],
+          "position": [
+            0.0,
+            1.6,
+            5.11
+          ]
+        }
+      },
+      {
+        "id": "rail_west",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 3.0
+        },
+        "transform": {
+          "rotation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "scale": [
+            0.18,
+            3.2,
+            0.18
+          ],
+          "position": [
+            -1.6,
+            0.0,
+            5.11
+          ]
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": "deck_to_post_sw",
+        "part": "deck",
+        "anchor": "corner_sw",
+        "target": {
+          "part": "post_sw",
+          "anchor": "tip"
+        },
+        "mode": "snap",
+        "offset": [
+          0.0,
+          0.0,
+          -1.35
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      }
+    ]
+  }
+}

@@ -689,3 +689,5 @@ The project should favor:
 
 > **small changes, explicit plans, evidence-based decisions, deterministic
 > validation, strong regression gates, and recoverable checkpoints.**
+
+Future Ideas files are informational only. They do not constitute approved scope. Ideas become actionable only through explicit user authorization or an approved phase plan.
