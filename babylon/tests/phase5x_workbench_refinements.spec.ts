@@ -26,23 +26,28 @@ test("Raster-Only authoring evaluates and exports without registry geometry", as
   await modeChoice.press("ArrowDown");
   await modeChoice.press("Enter");
   await expect(modeChoice).toHaveValue("Raster-Only Recipe");
-  await workbench.getByRole("spinbutton", { name: "Raster-Only profile width at creation" }).fill("3");
-  await workbench.getByRole("spinbutton", { name: "Raster-Only profile height at creation" }).fill("2");
+  await expect(workbench.getByRole("spinbutton", { name: "Raster-Only profile width at creation" })).toHaveCount(0);
+  await expect(workbench.getByRole("spinbutton", { name: "Raster-Only profile height at creation" })).toHaveCount(0);
   await workbench.getByRole("button", { name: "Start new guided recipe" }).click();
+  await workbench.getByRole("spinbutton", { name: "Raster grid columns", exact: true }).fill("3");
+  await workbench.getByRole("spinbutton", { name: "Raster grid rows", exact: true }).fill("2");
+  await workbench.getByRole("button", { name: "Apply grid dimensions", exact: true }).click();
 
   const editor = workbench.getByRole("textbox", { name: "Formal Object Recipe v0.6 JSON" });
   await expect.poll(async () => {
-    const value = await editor.inputValue();
-    return value ? (JSON.parse(value) as Recipe) : null;
-  }).toMatchObject({
+    const values = await editor.evaluateAll(nodes => nodes.map(node => (node as HTMLTextAreaElement).value));
+    return values.map(value => value ? (JSON.parse(value) as Recipe) : null);
+  }).toMatchObject([{
     object: {
-      profile: { width: 3, height: 2, data: [0, 0, 0, 1, 0, 0] },
+      profile: { width: 3, height: 2, data: [1, 0, 0, 0, 0, 0] },
       parts: [{
         id: "stack_1",
         geometry: { type: "raster_stack" },
       }],
     },
-  });
+  }]);
+  await expect(page.getByTestId("stApp")).toHaveAttribute("data-test-script-state", "notRunning");
+  await expect(editor).toHaveCount(1);
   const recipe = JSON.parse(await editor.inputValue()) as Recipe;
   expect(recipe.object.parts).toHaveLength(1);
   expect(recipe.object.parts[0]).not.toHaveProperty("type");

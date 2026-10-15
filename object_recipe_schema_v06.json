@@ -141,7 +141,16 @@
         "cell_size": {"$ref": "#/$defs/cellSize"},
         "construction_plane": {"$ref": "#/$defs/stackConstructionPlane"},
         "plane": {"$ref": "#/$defs/plane"},
-        "evolution": {"$ref": "#/$defs/evolution"}
+        "evolution": {"$ref": "#/$defs/evolution"},
+        "drawing_mode": {
+          "enum": ["Start at origin", "Centered at origin", "Start at Anchor", "Center on anchor"],
+          "description": "Workbench placement intent. Start modes rotate/scale about local canvas (0,0); center modes about the full canvas center. World placement is captured in the ordinary part transform when saved. Omission preserves legacy canvas-center evolution."
+        },
+        "placement_anchor": {"type": "string", "description": "Workbench part.anchor selection; its position is captured when saved, not a live connection."},
+        "d_horz": {"type": "number", "minimum": 0, "maximum": 10, "description": "Additional local U shift per layer; default 0."},
+        "d_vert": {"type": "number", "minimum": 0, "maximum": 10, "description": "Additional local V shift per layer; default 0."},
+        "d_scale": {"type": "number", "minimum": 0, "maximum": 2, "description": "Layer n multiplies evolution scale by 1+n*d_scale; default 0."},
+        "d_angle": {"type": "number", "minimum": 0, "maximum": 15, "description": "Additional rotation in degrees per layer about the placement pivot; default 0."}
       },
       "not": {"required": ["construction_plane", "plane"]},
       "additionalProperties": false

@@ -85,9 +85,19 @@ def test_standard_registry_type_refresh_is_immediate_and_unsaved():
 def test_raster_only_creation_is_geometry_only_and_uses_v06_pipeline():
     test = _app()
     _element(test.selectbox, "New recipe mode").select("Raster-Only Recipe").run()
-    _element(test.number_input, "Raster-Only profile width at creation").set_value(3).run()
-    _element(test.number_input, "Raster-Only profile height at creation").set_value(2).run()
+    labels = {widget.label for widget in test.number_input}
+    assert "Raster-Only profile width at creation" not in labels
+    assert "Raster-Only profile height at creation" not in labels
     _element(test.button, "Start new guided recipe").click().run()
+    assert not test.exception
+    assert _source(test)["object"]["profile"] == {"type": "raster", "width": 1, "height": 1, "data": [1]}
+    _element(test.number_input, "Raster grid columns").set_value(3)
+    _element(test.number_input, "Raster grid rows").set_value(2)
+    _element(test.button, "Apply grid dimensions").click().run()
+    # Grid resizing preserves top-left cells; move this example to bottom-left.
+    _element(test.checkbox, "Cell A A").uncheck()
+    _element(test.checkbox, "Cell B A").check()
+    _element(test.button, "Save raster occupancy").click().run()
     assert not test.exception
 
     recipe = _source(test)

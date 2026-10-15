@@ -417,6 +417,10 @@ def _build_raster_stack_mesh(
     evolution = geometry.get("evolution", {})
     if not isinstance(evolution, Mapping):
         raise RecipeError("Raster stack evolution must be an object.")
+    for name, maximum in (("d_horz", 10.0), ("d_vert", 10.0), ("d_scale", 2.0), ("d_angle", 15.0)):
+        value = geometry.get(name, 0.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0.0 <= value <= maximum:
+            raise RecipeError(f"Raster stack {name} must be a finite number from 0 to {maximum}.")
     plane_origin, basis_u, basis_v, basis_normal = _resolve_raster_plane_frame(geometry, "raster_stack")
 
     occupied = {
@@ -492,6 +496,10 @@ def _build_raster_stack_mesh(
     vertex_indices = {}
     canvas_center_x = profile.width * cell_width / 2.0
     canvas_center_y = profile.height * cell_height / 2.0
+    # New workbench modes use the full raster canvas, including empty cells.
+    # Legacy recipes retain their existing canvas-center evolution pivot.
+    start_mode = geometry.get("drawing_mode", "").startswith("Start")
+    pivot_x, pivot_y = (0.0, 0.0) if start_mode else (canvas_center_x, canvas_center_y)
     for layer_index in range(layer_count):
         z = depth * layer_index / (layer_count - 1)
         shift_x, shift_y = _interpolated_evolution_value(
@@ -503,14 +511,20 @@ def _build_raster_stack_mesh(
         scale_x, scale_y = _interpolated_evolution_value(
             evolution, "scale", layer_index, layer_count, (1.0, 1.0), STACK_EVOLUTION_SCALE_LIMITS
         )
+        shift_x += layer_index * geometry.get("d_horz", 0.0)
+        shift_y += layer_index * geometry.get("d_vert", 0.0)
+        rotation_degrees += layer_index * geometry.get("d_angle", 0.0)
+        layer_scale = 1.0 + layer_index * geometry.get("d_scale", 0.0)
+        scale_x *= layer_scale
+        scale_y *= layer_scale
         radians = math.radians(float(rotation_degrees))
         cosine, sine = math.cos(radians), math.sin(radians)
         for key in vertex_keys:
             grid_x, grid_y = key[:2]
-            relative_x = (grid_x * cell_width - canvas_center_x) * scale_x
-            relative_y = (grid_y * cell_height - canvas_center_y) * scale_y
-            plane_x = canvas_center_x + cosine * relative_x - sine * relative_y + shift_x
-            plane_y = canvas_center_y + sine * relative_x + cosine * relative_y + shift_y
+            relative_x = (grid_x * cell_width - pivot_x) * scale_x
+            relative_y = (grid_y * cell_height - pivot_y) * scale_y
+            plane_x = pivot_x + cosine * relative_x - sine * relative_y + shift_x
+            plane_y = pivot_y + sine * relative_x + cosine * relative_y + shift_y
             point = tuple(
                 plane_origin[axis]
                 + plane_x * basis_u[axis]

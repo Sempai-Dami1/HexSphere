@@ -320,18 +320,22 @@ def test_ui_optional_omissions_fixed_id_and_draft_no_mutation():
     assert not element(test.checkbox, "Store explicit cell size").value
     assert not element(test.checkbox, "Store explicit construction plane").value
     assert not any(widget.label == "New raster stack ID" for widget in test.text_input)
-    element(test.number_input, "Stack depth").set_value(3.0)
+    element(test.number_input, "Stack thickness").set_value(3.0)
     assert source(test) == recipe
     element(test.button, "Save raster stack").click().run()
     expected = copy.deepcopy(recipe)
     expected["object"]["parts"][0]["geometry"]["depth"] = 3.0
+    expected["object"]["parts"][0]["geometry"].update(
+        drawing_mode="Centered at origin", d_horz=0.0, d_vert=0.0, d_scale=0.0, d_angle=0.0,
+    )
+    expected["object"]["parts"][0]["transform"] = {"position": [-1.5, -1.0, 0.0]}
     assert source(test) == expected
     element(test.selectbox, "Raster stack to edit").select("stack").run()
     element(test.checkbox, "Store explicit construction plane").check()
     element(test.selectbox, "Stack construction plane").select("yz")
     element(test.button, "Save raster stack").click().run()
     expected["object"]["parts"][0]["geometry"]["construction_plane"] = "yz"
-    expected["object"]["parts"][0]["transform"] = {"position": [0.0, 0.0, 0.5]}
+    expected["object"]["parts"][0]["transform"] = {"position": [0.0, -1.5, -1.0]}
     assert source(test) == expected
     element(test.selectbox, "Raster stack to edit").select("stack").run()
     element(test.button, "Remove raster stack").click().run()

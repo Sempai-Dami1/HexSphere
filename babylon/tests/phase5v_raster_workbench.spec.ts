@@ -56,7 +56,7 @@ interface BabylonState {
 interface Recipe {
   object: {
     profile: { width: number; height: number; data: number[] };
-    parts: { geometry: { depth: number } }[];
+    parts: { geometry: { depth: number; [key: string]: unknown }; transform?: { position: number[] } }[];
   };
 }
 
@@ -94,7 +94,7 @@ test("Native raster edits change topology and depth in real package downloads", 
   }
   await expectSource(originalSource);
   await expect(workbench.getByRole("spinbutton", { name: "Profile width at creation" })).toHaveCount(0);
-  await expect(workbench.getByText("Profile dimensions: 3 columns x 2 rows (fixed).")).toBeVisible();
+  await expect(workbench.getByText("Profile dimensions: 3 columns x 2 rows.")).toBeVisible();
   const packages: ObjectPackage[] = [];
   const bytes: Buffer[] = [];
 
@@ -113,12 +113,19 @@ test("Native raster edits change topology and depth in real package downloads", 
       await expect(workbench.getByRole("button", { name: "Create raster stack", exact: true }))
         .toHaveCount(0);
       await expect(page.getByTestId("stApp")).toHaveAttribute("data-test-script-state", "notRunning");
-      const depthInput = workbench.getByRole("spinbutton", { name: "Stack depth", exact: true });
+      const placement = workbench.getByRole("combobox", { name: "Raster placement mode", exact: true });
+      await placement.click();
+      await page.getByRole("option", { name: "Start at origin", exact: true }).click();
+      const depthInput = workbench.getByRole("spinbutton", { name: "Stack thickness", exact: true });
       await expect(depthInput).toHaveCount(1);
       await depthInput.fill(variant === "depth" ? "3" : "2");
       await depthInput.press("Tab");
       await expect(depthInput).toHaveValue(variant === "depth" ? /^3(?:\.0+)?$/ : /^2(?:\.0+)?$/);
       await workbench.getByRole("button", { name: "Save raster stack", exact: true }).click();
+      Object.assign(expectedSource.object.parts[0].geometry, {
+        drawing_mode: "Start at origin", d_horz: 0, d_vert: 0, d_scale: 0, d_angle: 0,
+      });
+      expectedSource.object.parts[0].transform = { position: [0, 0, 0] };
       if (variant === "depth") expectedSource.object.parts[0].geometry.depth = 3;
       if (variant === "mask") {
         await expectSource(expectedSource);

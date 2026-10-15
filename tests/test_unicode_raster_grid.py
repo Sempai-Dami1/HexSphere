@@ -5,6 +5,9 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import object_recipe_workbench as workbench
+# Import the app before AppTest starts a script context. Importing it inside
+# that context runs the full app instead of only the raster test harness.
+import streamlit_app
 
 
 def grid_app(recipe, codepoint=ord("A")):
@@ -51,7 +54,7 @@ def test_small_fixed_profile_requires_explicit_new_recipe():
     assert not app.exception
     assert len(cells(app)) == 6
     assert json.loads(app.session_state["phase5s_recipe_json"]) == before
-    next(button for button in app.button if button.label == "Start new 8Ã—8 Unicode raster recipe").click().run()
+    next(button for button in app.button if button.label == "Start new 8\u00d78 Unicode raster recipe").click().run()
     assert not app.exception
     assert len(cells(app)) == 64
     assert [int(cell.value) for cell in cells(app)] == workbench.unicode_raster_data(ord("A"), 8, 8)

@@ -23,6 +23,7 @@ _RECIPE_EDITOR_PREFIX = "phase5s_recipe_editor_"
 _VALIDATED_SOURCE_KEY = "phase5s_validated_source"
 _PACKAGE_JSON_KEY = "phase5s_package_json"
 _SUMMARY_KEY = "phase5s_package_summary"
+_RASTER_EDIT_PREVIEW_KEY = "raster_show_editing_preview"
 
 
 def new_object_recipe(
@@ -489,10 +490,32 @@ def _render_guided_editor(recipe: dict[str, Any], registry: Mapping[str, Any]) -
     existing_type = current_part["type"] if current_part else registry_types[0]
     selected_type = st.selectbox(
         "Registry object type",
-        registry_types,
+        [*registry_types, "Raster profile only"],
         index=registry_types.index(existing_type),
         key=f"phase5s_part_type_{part_key}",
     )
+    if selected_type == "Raster profile only":
+        st.caption("Use generated raster geometry without a registry object.")
+        if st.button("Use raster profile only", key=f"raster_only_{part_key}"):
+            updated = _clone_recipe(recipe)
+            raster = new_raster_only_recipe()
+            updated["object"].setdefault("profile", raster["object"]["profile"])
+            replacement = {
+                "id": current_part["id"] if current_part else _next_identifier(ids, "stack"),
+                "geometry": raster["object"]["parts"][0]["geometry"],
+            }
+            if current_part:
+                for field in ("transform", "anchors"):
+                    if field in current_part:
+                        replacement[field] = _clone_recipe(current_part[field])
+                updated["object"]["parts"] = [
+                    replacement if part["id"] == current_part["id"] else part
+                    for part in updated["object"]["parts"]
+                ]
+            else:
+                updated["object"]["parts"].append(replacement)
+            _save_raster_recipe(updated, registry)
+        return
     config = registry[selected_type]
     old_parameters = current_part.get("parameters", {}) if current_part else {}
 
@@ -2063,7 +2086,8 @@ def _check_raster_guided_recipe(recipe: Mapping[str, Any], registry: Mapping[str
             geometry["type"] != "raster_stack"
             or geometry["profile"] != "object.profile"
             or set(geometry) - {
-                "type", "profile", "layer_count", "depth", "cell_size", "construction_plane"
+                "type", "profile", "layer_count", "depth", "cell_size", "construction_plane",
+                "drawing_mode", "placement_anchor", "d_horz", "d_vert", "d_scale", "d_angle"
             }
             or not all(_raster_literal(value) for value in geometry.values())
             or not all(_raster_literal(value) for value in part.get("transform", {}).values())
@@ -2113,6 +2137,46 @@ def raster_profile_candidate(
     return updated
 
 
+def resize_raster_profile_candidate(
+    recipe: Mapping[str, Any], registry: Mapping[str, Any], width: int, height: int,
+) -> dict[str, Any]:
+    """Explicitly resize a profile, preserving overlapping top-left grid cells."""
+    _check_raster_guided_recipe(recipe, registry)
+    if any(isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 16
+           for value in (width, height)):
+        raise object_recipe.RecipeError("Grid dimensions must be integers from 1 to 16.")
+    profile = recipe["object"].get("profile")
+    if profile is None:
+        raise object_recipe.RecipeError("Create a raster profile before resizing it.")
+    data = [
+        profile["data"][row * profile["width"] + column]
+        if row < profile["height"] and column < profile["width"] else 0
+        for row in range(height) for column in range(width)
+    ]
+    if not any(data):
+        raise object_recipe.RecipeError("Resizing would remove every occupied cell. Keep at least one occupied cell within the new grid.")
+    updated = _clone_recipe(recipe)
+    updated["object"]["profile"] = dict(profile, width=width, height=height, data=data)
+    connected_parts = {connection["part"] for connection in updated["object"].get("connections", [])}
+    for part in updated["object"]["parts"]:
+        geometry = part.get("geometry", {})
+        if part["id"] in connected_parts or geometry.get("drawing_mode") not in ("Centered at origin", "Center on anchor"):
+            continue
+        plane = geometry.get("construction_plane", "xy")
+        horizontal, vertical = _RASTER_PLANE_AXES[plane]
+        cell = geometry.get("cell_size", [1.0, 1.0])
+        old_pivot, new_pivot = [0.0] * 3, [0.0] * 3
+        old_pivot[horizontal], old_pivot[vertical] = profile["width"] * cell[0] / 2, profile["height"] * cell[1] / 2
+        new_pivot[horizontal], new_pivot[vertical] = width * cell[0] / 2, height * cell[1] / 2
+        transform = part.setdefault("transform", {})
+        old_world = object_recipe._transform_point(old_pivot, transform)
+        new_world = object_recipe._transform_point(new_pivot, transform)
+        position = transform.get("position", [0.0] * 3)
+        transform["position"] = [position[axis] + old_world[axis] - new_world[axis] for axis in range(3)]
+    _check_raster_guided_recipe(updated, registry)
+    return updated
+
+
 def raster_stack_candidate(
     recipe: Mapping[str, Any], registry: Mapping[str, Any],
     part_id: str, geometry: Mapping[str, Any], *, creating: bool,
@@ -2151,14 +2215,43 @@ def remove_raster_stack_candidate(
     return updated
 
 
-def _save_raster_recipe(updated: Mapping[str, Any], registry: Mapping[str, Any]) -> None:
+def _save_raster_recipe(
+    updated: Mapping[str, Any], registry: Mapping[str, Any], *, selected_stack: str | None = None,
+) -> None:
     _check_raster_guided_recipe(updated, registry)
+    if st.session_state.get(_RASTER_EDIT_PREVIEW_KEY, False):
+        old_source = _recipe_text(json.loads(st.session_state[_RECIPE_SOURCE_KEY]))
+        old_token = st.session_state.get(
+            "raster_active_edit_token", hashlib.sha256(old_source.encode("utf-8")).hexdigest()[:12],
+        )
+        old_selection = st.session_state.get(f"phase5v_stack_choice_{old_token}", "Create new stack")
+        selection = selected_stack or old_selection
+        choices = {"Create new stack", *(part["id"] for part in updated["object"]["parts"] if "geometry" in part)}
+        if selection not in choices:
+            selection = "Create new stack"
+        new_token = hashlib.sha256(_recipe_text(updated).encode("utf-8")).hexdigest()[:12]
+        if new_token != old_token:
+            restore_values = {f"phase5v_stack_choice_{new_token}": selection, _RASTER_EDIT_PREVIEW_KEY: True}
+            # Saving occupancy or dimensions must not discard a live stack draft.
+            if selection == old_selection or selected_stack is not None:
+                for prefix in (
+                    "phase5v_plane_", "phase5v_store_plane_", "phase5v_stack_id_",
+                    "phase5v_layers_", "phase5v_depth_", "phase5v_store_cell_",
+                    "phase5v_cell_width_", "phase5v_cell_height_",
+                    "phase5x_raster_placement_mode_", "phase5x_raster_anchor_",
+                    "stack_dhorz_", "stack_dvert_", "stack_dscale_", "stack_dangle_",
+                ):
+                    old_key = f"{prefix}{old_token}_{old_selection}"
+                    if old_key in st.session_state:
+                        restore_values[f"{prefix}{new_token}_{selection}"] = st.session_state[old_key]
+            st.session_state["raster_pending_edit_widgets"] = {"token": new_token, "values": restore_values}
     st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(updated)
     _invalidate_evaluated_result()
     st.rerun()
 
 
 _RASTER_PLANE_AXES = {"xy": (0, 1), "yz": (1, 2), "zx": (2, 0)}
+_RASTER_DRAWING_MODES = ["Start at origin", "Centered at origin", "Start at Anchor", "Center on anchor"]
 
 
 def _raster_plane_center(
@@ -2195,11 +2288,34 @@ def _apply_raster_stack_placement(
     d_vert: float,
     anchor_position: tuple[float, float, float] | None = None,
 ) -> dict[str, Any]:
+    if mode in _RASTER_DRAWING_MODES:
+        geometry = dict(geometry, drawing_mode=mode)
     updated = raster_stack_candidate(recipe, registry, part_id, geometry, creating=creating)
     if any(connection["part"] == part_id for connection in updated["object"].get("connections", [])):
         raise object_recipe.RecipeError(
             "This stack's position is controlled by a connection; edit its placement through that relationship."
         )
+
+    if mode in _RASTER_DRAWING_MODES:
+        if mode in ("Start at Anchor", "Center on anchor") and anchor_position is None:
+            raise object_recipe.RecipeError("Select an available placement anchor before saving.")
+        reference = anchor_position if mode in ("Start at Anchor", "Center on anchor") else (0.0, 0.0, 0.0)
+        horizontal_axis, vertical_axis = _RASTER_PLANE_AXES[plane]
+        pivot = [0.0, 0.0, 0.0]
+        if mode in ("Centered at origin", "Center on anchor"):
+            profile = updated["object"]["profile"]
+            cell = geometry.get("cell_size", [1.0, 1.0])
+            pivot[horizontal_axis] = profile["width"] * cell[0] / 2.0
+            pivot[vertical_axis] = profile["height"] * cell[1] / 2.0
+        part = next(part for part in updated["object"]["parts"] if part["id"] == part_id)
+        transform = part.setdefault("transform", {})
+        transformed_pivot = object_recipe._transform_point(pivot, {key: value for key, value in transform.items() if key != "position"})
+        position = [reference[axis] - transformed_pivot[axis] for axis in range(3)]
+        position[horizontal_axis] += d_horz
+        position[vertical_axis] += d_vert
+        transform["position"] = position
+        _check_raster_guided_recipe(updated, registry)
+        return updated
 
     evaluated = object_recipe.build_evaluated_recipe(updated, registry)
     mesh = next(part for part in evaluated.parts if part.part_id == part_id)
@@ -2247,7 +2363,7 @@ def unicode_raster_data(codepoint: int, width: int, height: int) -> list[int]:
             for row in range(height) for col in range(width)]
 
 
-def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any]) -> None:
+def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any]) -> dict[str, Any] | None:
     st.subheader("Raster profile and stacks")
     if _is_raster_only_recipe(recipe):
         st.caption(
@@ -2255,16 +2371,22 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
             "No registry geometry object is used."
         )
     st.caption(
-        "Width and height are selected at creation and cannot be changed here afterward. "
-        "Imports are never padded, cropped, or silently resized. Named profiles and advanced "
+        "Set grid columns and rows below. Existing grids resize only when you apply dimensions. "
+        "Named profiles and advanced "
         "raster features remain JSON-only."
     )
     obj = recipe["object"]
     profile = obj.get("profile")
     token = hashlib.sha256(_recipe_text(recipe).encode("utf-8")).hexdigest()[:12]
+    st.session_state["raster_active_edit_token"] = token
+    pending = st.session_state.pop("raster_pending_edit_widgets", None)
+    if pending is not None and pending["token"] == token:
+        for widget_key, value in pending["values"].items():
+            st.session_state[widget_key] = value
+    live_preview = st.session_state.get(_RASTER_EDIT_PREVIEW_KEY, False)
     requested_cp = st.session_state.get("unicode_raster_request")
     if requested_cp is not None and profile is not None and min(profile["width"], profile["height"]) < 8:
-        st.info("The selected Unicode character needs at least 8×8. This fixed profile is unchanged.")
+        st.info("The selected Unicode character needs at least 8×8. Apply larger grid dimensions below, or start a new recipe.")
         st.caption("Starting a new recipe replaces the current authoring recipe; download its JSON first if needed.")
         if st.button("Start new 8×8 Unicode raster recipe", key=f"unicode_new_raster_{token}"):
             st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(new_raster_only_recipe(8, 8))
@@ -2297,7 +2419,25 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     else:
         width, height = profile["width"], profile["height"]
         data = profile["data"]
-        st.caption(f"Profile dimensions: {width} columns x {height} rows (fixed).")
+        st.caption(f"Profile dimensions: {width} columns x {height} rows.")
+        with st.form(f"raster_grid_dimensions_{token}"):
+            grid_columns = st.number_input(
+                "Raster grid columns", min_value=1, max_value=16, value=width, step=1,
+                key=f"raster_grid_columns_{token}",
+            )
+            grid_rows = st.number_input(
+                "Raster grid rows", min_value=1, max_value=16, value=height, step=1,
+                key=f"raster_grid_rows_{token}",
+            )
+            st.caption("Keeps overlapping cells at the top-left. New cells are empty; cells outside a smaller grid are removed. Save occupancy edits before resizing.")
+            apply_dimensions = st.form_submit_button("Apply grid dimensions")
+        if apply_dimensions:
+            try:
+                _save_raster_recipe(
+                    resize_raster_profile_candidate(recipe, registry, grid_columns, grid_rows), registry,
+                )
+            except object_recipe.RecipeError as exc:
+                st.error(str(exc))
     consumers = [part["id"] for part in obj["parts"] if "geometry" in part]
     st.caption("Profile consumers: " + (", ".join(consumers) or "none"))
     st.caption("Row 0 is the top/high-Y row; columns increase X. The canvas origin is lower-left.")
@@ -2312,7 +2452,7 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
         st.caption(f"Unicode draft: {st.session_state['unicode_raster_notice']}. Edit cells, then submit to save. "
                    "Raster font: Segoe UI Symbol when available, otherwise Arial/Pillow default. "
                    "Unsupported glyphs may appear blank or as a missing-glyph box.")
-    with st.form(f"phase5v_profile_form_{token}"):
+    with st.container():
         occupancy: list[int] = []
         header = st.columns(width + 1)
         for column in range(width):
@@ -2330,7 +2470,7 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
                     label_visibility="hidden",
                     key=f"phase5v_cell_{token}_{row}_{column}",
                 )))
-        save_profile = st.form_submit_button(
+        save_profile = st.button(
             "Save raster occupancy" if profile is not None else "Create raster profile"
         )
     if save_profile:
@@ -2339,7 +2479,7 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
             _save_raster_recipe(updated, registry)
         except object_recipe.RecipeError as exc:
             st.error(str(exc))
-    if profile is None:
+    if profile is None and not live_preview:
         return
 
     stacks = [part for part in obj["parts"] if "geometry" in part]
@@ -2376,31 +2516,23 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     mode_key = f"phase5x_raster_placement_mode_{key}"
     mode = st.selectbox(
         "Raster placement mode",
-        ["Absolute", "Centered on axis", "Centered on anchor"],
-        index=1,
+        _RASTER_DRAWING_MODES,
+        index=_RASTER_DRAWING_MODES.index(geometry.get("drawing_mode", "Centered at origin")),
         key=mode_key,
     )
     anchor_choice = None
-    if mode == "Centered on anchor" and anchors:
+    anchor_mode = mode in ("Start at Anchor", "Center on anchor")
+    if anchor_mode and anchors:
         anchor_choice = st.selectbox(
             "Placement anchor",
             [name for name, _position in anchors],
-            index=0,
+            index=list(anchor_positions).index(geometry["placement_anchor"]) if geometry.get("placement_anchor") in anchor_positions else 0,
             key=f"phase5x_raster_anchor_{key}",
         )
-    elif mode == "Centered on anchor":
-        st.info("No other-part anchors are available; placement will be centered on the axis.")
+    elif anchor_mode:
+        st.info("Create an anchor on another part before using this placement mode.")
 
-    center_seed = (0.0, 0.0)
-    if current and placement_eval:
-        evaluated_mesh = next(part for part in placement_eval.parts if part.part_id == current["id"])
-        center_seed = _raster_plane_center(evaluated_mesh.vertices, plane)
     anchor_position = anchor_positions.get(anchor_choice) if anchor_choice else None
-    if mode == "Centered on anchor" and anchor_position:
-        center_seed = (
-            center_seed[0] - anchor_position[_RASTER_PLANE_AXES[plane][0]],
-            center_seed[1] - anchor_position[_RASTER_PLANE_AXES[plane][1]],
-        )
     axis_labels = {
         "xy": ("X", "Y"), "yz": ("Y", "Z"), "zx": ("Z", "X"),
     }[plane]
@@ -2410,7 +2542,7 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     if connected_source:
         st.info("This stack's position is solved from its connection; placement controls are disabled.")
 
-    with st.form(f"phase5v_stack_form_{key}"):
+    with st.container():
         if current:
             part_id = current["id"]
             st.caption(f"Stack ID: {part_id} (fixed; rename through explicit JSON only).")
@@ -2424,8 +2556,9 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
             value=geometry.get("layer_count", 2), key=f"phase5v_layers_{key}",
         )
         depth = st.number_input(
-            "Stack depth", min_value=0.01, max_value=1000.0,
+            "Stack thickness", min_value=0.01, max_value=1000.0,
             value=float(geometry.get("depth", 1.0)), key=f"phase5v_depth_{key}",
+            help="Total distance from the first to the final layer along the construction-plane normal.",
         )
         store_cell_size = st.checkbox(
             "Store explicit cell size", value="cell_size" in geometry or current is None,
@@ -2442,43 +2575,55 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
         )
         st.caption(
             f"dHorz follows {axis_labels[0]} and dVert follows {axis_labels[1]}. "
-            "Positioning targets the occupied mesh center; existing transforms are preserved."
+            "Each layer adds these deviations relative to the original profile. "
+            "Layer n uses n × shift, n × angle, and scale 1 + n × dScale. "
+            "Rotation and scale use the selected origin or anchor; centering uses the full raster canvas."
         )
         d_horz = st.number_input(
-            f"dHorz ({axis_labels[0]})", value=float(center_seed[0]),
-            key=f"phase5x_dhorz_{key}_{mode}_{plane}_{anchor_choice or 'axis'}",
-            disabled=connected_source,
+            f"dHorz ({axis_labels[0]})", min_value=0.0, max_value=10.0, step=1.0,
+            value=float(geometry.get("d_horz", 0.0)), key=f"stack_dhorz_{key}",
         )
         d_vert = st.number_input(
-            f"dVert ({axis_labels[1]})", value=float(center_seed[1]),
-            key=f"phase5x_dvert_{key}_{mode}_{plane}_{anchor_choice or 'axis'}",
-            disabled=connected_source,
+            f"dVert ({axis_labels[1]})", min_value=0.0, max_value=10.0, step=1.0,
+            value=float(geometry.get("d_vert", 0.0)), key=f"stack_dvert_{key}",
+        )
+        d_scale = st.number_input(
+            "dScale", min_value=0.0, max_value=2.0, step=0.1,
+            value=float(geometry.get("d_scale", 0.0)), key=f"stack_dscale_{key}",
+        )
+        d_angle = st.number_input(
+            "dAngle", min_value=0.0, max_value=15.0, step=1.0,
+            value=float(geometry.get("d_angle", 0.0)), key=f"stack_dangle_{key}",
         )
         st.caption(
             "Unchecked optional fields are omitted: cell size defaults to [1,1], plane to XY. "
             "A non-XY plane is stored automatically. YZ stacks along +X; ZX along +Y."
         )
-        save_stack = st.form_submit_button(
+        save_stack = st.button(
             "Save raster stack" if current else "Create raster stack",
-            disabled=connected_source,
+            disabled=connected_source or (anchor_mode and anchor_choice is None),
         )
-        remove_stack = st.form_submit_button("Remove raster stack", disabled=current is None)
+        remove_stack = st.button("Remove raster stack", disabled=current is None)
+    edited_geometry = {
+        "type": "raster_stack", "profile": "object.profile",
+        "layer_count": layers, "depth": depth,
+        "drawing_mode": mode,
+        "d_horz": d_horz, "d_vert": d_vert, "d_scale": d_scale, "d_angle": d_angle,
+    }
+    if anchor_mode and anchor_choice:
+        edited_geometry["placement_anchor"] = anchor_choice
+    if store_cell_size:
+        edited_geometry["cell_size"] = [cell_width, cell_height]
+    if store_plane or plane != "xy":
+        edited_geometry["construction_plane"] = plane
     if save_stack:
-        edited_geometry = {
-            "type": "raster_stack", "profile": "object.profile",
-            "layer_count": layers, "depth": depth,
-        }
-        if store_cell_size:
-            edited_geometry["cell_size"] = [cell_width, cell_height]
-        if store_plane or plane != "xy":
-            edited_geometry["construction_plane"] = plane
         try:
             updated = _apply_raster_stack_placement(
                 recipe, registry, part_id, edited_geometry,
                 creating=current is None, plane=plane, mode=mode,
-                d_horz=d_horz, d_vert=d_vert, anchor_position=anchor_position,
+                d_horz=0.0, d_vert=0.0, anchor_position=anchor_position,
             )
-            _save_raster_recipe(updated, registry)
+            _save_raster_recipe(updated, registry, selected_stack=part_id)
         except object_recipe.RecipeError as exc:
             st.error(str(exc))
     if remove_stack and current:
@@ -2486,6 +2631,19 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
             _save_raster_recipe(remove_raster_stack_candidate(recipe, registry, current["id"]), registry)
         except object_recipe.RecipeError as exc:
             st.error(str(exc))
+    if live_preview:
+        try:
+            draft = raster_profile_candidate(recipe, registry, width, height, occupancy)
+            if connected_source:
+                draft = raster_stack_candidate(draft, registry, part_id, edited_geometry, creating=False)
+            else:
+                draft = _apply_raster_stack_placement(
+                    draft, registry, part_id, edited_geometry, creating=current is None,
+                    plane=plane, mode=mode, d_horz=0.0, d_vert=0.0, anchor_position=anchor_position,
+                )
+            return {"recipe": draft, "part_id": part_id}
+        except object_recipe.RecipeError as exc:
+            return {"error": str(exc)}
 
 
 def _evaluate_package(recipe_source: str, registry: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -2556,19 +2714,6 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             ["Standard Guided Recipe", "Raster-Only Recipe"],
             key="phase5x_new_recipe_mode",
         )
-        raster_width = raster_height = 1
-        if new_recipe_mode == "Raster-Only Recipe":
-            width_col, height_col = st.columns(2)
-            raster_width = width_col.number_input(
-                "Raster-Only profile width at creation",
-                min_value=1, max_value=16, value=1, step=1,
-                key="phase5x_new_raster_width",
-            )
-            raster_height = height_col.number_input(
-                "Raster-Only profile height at creation",
-                min_value=1, max_value=16, value=1, step=1,
-                key="phase5x_new_raster_height",
-            )
         if upload_col.button("Load uploaded recipe", disabled=uploaded_recipe is None, key="phase5s_load_recipe"):
             try:
                 uploaded_source = uploaded_recipe.getvalue().decode("utf-8")
@@ -2583,7 +2728,7 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
 
         if new_col.button("Start new guided recipe", key="phase5s_new_recipe"):
             new_recipe = (
-                new_raster_only_recipe(int(raster_width), int(raster_height))
+                new_raster_only_recipe()
                 if new_recipe_mode == "Raster-Only Recipe"
                 else new_object_recipe(registry)
             )
@@ -2593,6 +2738,8 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
 
         source_before_editor = st.session_state[_RECIPE_SOURCE_KEY]
         checked_before_editor = None
+        raster_preview = None
+        raster_preview_available = False
         try:
             checked_before_editor = _load_v06_recipe(source_before_editor)
         except (json.JSONDecodeError, object_recipe.RecipeError):
@@ -2608,7 +2755,8 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 _render_component_controls(checked_before_editor, registry)
                 _render_replications(checked_before_editor, registry)
                 if is_raster_guided_recipe(checked_before_editor, registry):
-                    _render_raster_controls(checked_before_editor, registry)
+                    raster_preview_available = True
+                    raster_preview = _render_raster_controls(checked_before_editor, registry)
             elif is_replication_guided_recipe(checked_before_editor, registry):
                 st.subheader("Guided authoring")
                 st.caption("Replication controls are available; unsupported recipe data remains in JSON.")
@@ -2616,7 +2764,8 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             elif is_raster_guided_recipe(checked_before_editor, registry):
                 st.subheader("Guided authoring")
                 st.caption("Raster controls are available; unsupported recipe data remains in JSON.")
-                _render_raster_controls(checked_before_editor, registry)
+                raster_preview_available = True
+                raster_preview = _render_raster_controls(checked_before_editor, registry)
             else:
                 st.info(
                     "This valid v0.6 recipe contains constructs outside the guided subset. "
@@ -2705,12 +2854,19 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
             and _PACKAGE_JSON_KEY in st.session_state
             and _SUMMARY_KEY in st.session_state
         )
+        st.divider()
+        st.subheader("4. Evaluated Package 1.0 and preview")
+        show_raster_edit = st.checkbox(
+            "Show raster object being edited",
+            key=_RASTER_EDIT_PREVIEW_KEY,
+            disabled=not raster_preview_available,
+            help="Show unsaved raster cells and stack settings while editing new or existing stacks. Changes update the editing preview without saving the recipe.",
+        )
+        package = None
         if result_is_current:
-            st.divider()
-            st.subheader("4. Evaluated Package 1.0 and preview")
             st.caption(
-                "This package is evaluated interchange data, not an editable recipe. The Plotly preview "
-                "interprets the same validated package that is offered for download."
+                "Package download contains the last evaluated source recipe. "
+                "Enable the raster editing preview to view unsaved raster changes."
             )
             summary = st.session_state[_SUMMARY_KEY]
             resources = summary["resources"]
@@ -2731,6 +2887,28 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                 key="phase5s_export_package",
             )
             package = object_package_consumer.load_package_from_json(st.session_state[_PACKAGE_JSON_KEY])
+        elif can_export_recipe:
+            st.info(
+                "No current evaluated result. Validate and evaluate this exact recipe source to enable "
+                "Package 1.0 download and preview."
+            )
+        if show_raster_edit and raster_preview_available:
+            package = None
+            if raster_preview is not None and "recipe" in raster_preview:
+                try:
+                    draft_json, _ = _evaluate_package(_recipe_text(raster_preview["recipe"]), registry)
+                    package = object_package_consumer.load_package_from_json(draft_json)
+                    st.caption(
+                        f"Raster editing preview: {raster_preview['part_id']} (unsaved). "
+                        "The edited raster is orange; other parts are transparent. "
+                        "Cells and stack controls update this preview live. Save changes and evaluate to update the downloadable package."
+                    )
+                except (object_recipe.RecipeError, object_package.ObjectPackageError,
+                        object_package_consumer.ConsumerPackageError) as exc:
+                    st.warning(f"Raster editing preview unavailable: {exc}")
+            elif raster_preview:
+                st.info(f"Raster editing preview: {raster_preview['error']}")
+        if package is not None:
             show_anchors = st.checkbox(
                 "Show visual anchors",
                 key="phase5x_show_visual_anchors",
@@ -2744,17 +2922,17 @@ def render_recipe_workbench(registry: Mapping[str, Any]) -> None:
                     key="phase5x_visual_anchor_size",
                 )
             figure = object_package_consumer.build_plotly_figure(package)
+            if show_raster_edit and raster_preview and "part_id" in raster_preview:
+                for trace in figure.data:
+                    if trace.name == raster_preview["part_id"]:
+                        trace.update(color="#f59e0b", opacity=1.0)
+                    else:
+                        trace.update(opacity=0.15)
+                figure.update_layout(uirevision=f"raster-editing-{raster_preview['part_id']}")
             if show_anchors:
                 _add_visual_anchor_traces(figure, package, anchor_cube_size)
             st.plotly_chart(
                 figure,
                 width="stretch",
                 key="phase5s_plotly_preview",
-            )
-        elif can_export_recipe:
-            st.divider()
-            st.subheader("4. Evaluated Package 1.0 and preview")
-            st.info(
-                "No current evaluated result. Validate and evaluate this exact recipe source to enable "
-                "Package 1.0 download and preview."
             )
