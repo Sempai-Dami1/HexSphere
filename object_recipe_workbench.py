@@ -6,14 +6,17 @@ import json
 import hashlib
 import math
 import re
+from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
 
 import streamlit as st
+from PIL import ImageFont
 
 import object_package
 import object_package_consumer
 import object_recipe
+import picture_sphere
 
 _RECIPE_SOURCE_KEY = "phase5s_recipe_json"
 _RECIPE_EDITOR_PREFIX = "phase5s_recipe_editor_"
@@ -2227,6 +2230,23 @@ def _apply_raster_stack_placement(
     return updated
 
 
+def unicode_raster_data(codepoint: int, width: int, height: int) -> list[int]:
+    """Center a glyph in a bounded row-major authoring grid, without changing a recipe."""
+    if not (8 <= width <= 16 and 8 <= height <= 16):
+        raise ValueError("Unicode grids require dimensions from 8 to 16.")
+    size = min(width, height)
+    font = None
+    for path in (Path("C:/Windows/Fonts/seguisym.ttf"), Path("C:/Windows/Fonts/arial.ttf")):
+        if path.is_file():
+            font = ImageFont.truetype(str(path), max(1, int(size * 0.9)))
+            break
+    mask = picture_sphere.rasterize_character_mask(chr(codepoint), size, font=font)
+    left, top = (width - size) // 2, (height - size) // 2
+    return [int(mask[row - top][col - left])
+            if top <= row < top + size and left <= col < left + size else 0
+            for row in range(height) for col in range(width)]
+
+
 def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any]) -> None:
     st.subheader("Raster profile and stacks")
     if _is_raster_only_recipe(recipe):
@@ -2242,7 +2262,21 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     obj = recipe["object"]
     profile = obj.get("profile")
     token = hashlib.sha256(_recipe_text(recipe).encode("utf-8")).hexdigest()[:12]
+    requested_cp = st.session_state.get("unicode_raster_request")
+    if requested_cp is not None and profile is not None and min(profile["width"], profile["height"]) < 8:
+        st.info("The selected Unicode character needs at least 8×8. This fixed profile is unchanged.")
+        st.caption("Starting a new recipe replaces the current authoring recipe; download its JSON first if needed.")
+        if st.button("Start new 8×8 Unicode raster recipe", key=f"unicode_new_raster_{token}"):
+            st.session_state[_RECIPE_SOURCE_KEY] = _recipe_text(new_raster_only_recipe(8, 8))
+            _clear_editor_widget_state()
+            _invalidate_evaluated_result()
+            st.rerun()
+        requested_cp = None
     if profile is None:
+        if requested_cp is not None:
+            for axis in ("width", "height"):
+                dimension_key = f"phase5v_{axis}_{token}"
+                st.session_state[dimension_key] = max(8, st.session_state.get(dimension_key, 8))
         width = st.number_input(
             "Profile width at creation", min_value=1, max_value=16, value=1,
             key=f"phase5v_width_{token}",
@@ -2267,6 +2301,17 @@ def _render_raster_controls(recipe: dict[str, Any], registry: Mapping[str, Any])
     consumers = [part["id"] for part in obj["parts"] if "geometry" in part]
     st.caption("Profile consumers: " + (", ".join(consumers) or "none"))
     st.caption("Row 0 is the top/high-Y row; columns increase X. The canvas origin is lower-left.")
+    if requested_cp is not None:
+        draft = unicode_raster_data(requested_cp, width, height)
+        for row in range(height):
+            for column in range(width):
+                st.session_state[f"phase5v_cell_{token}_{row}_{column}"] = bool(draft[row * width + column])
+        st.session_state.pop("unicode_raster_request")
+        st.session_state["unicode_raster_notice"] = f"U+{requested_cp:04X}"
+    if st.session_state.get("unicode_raster_notice"):
+        st.caption(f"Unicode draft: {st.session_state['unicode_raster_notice']}. Edit cells, then submit to save. "
+                   "Raster font: Segoe UI Symbol when available, otherwise Arial/Pillow default. "
+                   "Unsupported glyphs may appear blank or as a missing-glyph box.")
     with st.form(f"phase5v_profile_form_{token}"):
         occupancy: list[int] = []
         header = st.columns(width + 1)

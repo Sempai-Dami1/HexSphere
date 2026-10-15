@@ -193,8 +193,8 @@ def test_auto_scale_defaults_and_slider_control():
     assert streamlit_app.DEFAULTS["vis_auto_scale"] is True
 
     source = pathlib.Path(streamlit_app.__file__).read_text()
-    assert 'st.toggle("Auto-scale", key="vis_auto_scale")' in source
-    assert 'st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)' in source
+    assert 'st.toggle("Auto-scale", value=st.session_state.vis_auto_scale, key="vis_auto_scale")' in source
+    assert 'st.slider("Scale", 0.1, 3.0, step=0.05, value=float(st.session_state.vis_scale), key="vis_scale", disabled=st.session_state.vis_auto_scale)' in source
 
 
 def test_object_selection_auto_generates_geometry():

@@ -14,6 +14,7 @@ import math
 import random
 import string
 from collections import defaultdict, deque
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -299,16 +300,36 @@ def _get_bitmap_font(size):
     return font
 
 
-def rasterize_character_mask(char, grid_size=16, font_size=None):
+def get_unicode_decal_font(size=14):
+    """Local symbol font for authoring overlays; existing default decals stay unchanged."""
+    key = ("unicode", size)
+    if key not in _BITMAP_FONT_CACHE:
+        font = None
+        for path in (Path("C:/Windows/Fonts/seguisym.ttf"), Path("C:/Windows/Fonts/arial.ttf")):
+            try:
+                font = ImageFont.truetype(str(path), size)
+                break
+            except OSError:
+                continue
+        _BITMAP_FONT_CACHE[key] = font or _get_bitmap_font(size)
+    return _BITMAP_FONT_CACHE[key]
+
+
+def rasterize_character_mask(char, grid_size=16, font_size=None, *, font=None, fit_text=False):
     """Rasterize a single character into a `grid_size` x `grid_size` boolean
     mask (row-major, row 0 = top of the glyph), used to build a flat
     pixel-quad decal instead of a camera-facing text billboard."""
     font_size = font_size or int(grid_size * 0.9)
-    font = _get_bitmap_font(font_size)
+    font = font or _get_bitmap_font(font_size)
     image = Image.new("L", (grid_size, grid_size), 0)
     draw = ImageDraw.Draw(image)
     bbox = draw.textbbox((0, 0), char, font=font)
     w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if fit_text and (w > grid_size - 2 or h > grid_size - 2):
+        ratio = min((grid_size - 2) / max(w, 1), (grid_size - 2) / max(h, 1))
+        font = font.font_variant(size=max(1, int(font.size * ratio)))
+        bbox = draw.textbbox((0, 0), char, font=font)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x = (grid_size - w) // 2 - bbox[0]
     y = (grid_size - h) // 2 - bbox[1]
     draw.text((x, y), char, fill=255, font=font)
@@ -316,7 +337,77 @@ def rasterize_character_mask(char, grid_size=16, font_size=None):
     return [[pixels[col, row] > 128 for col in range(grid_size)] for row in range(grid_size)]
 
 
-def build_tile_label_decal(tile_id, char, tile_centroids, adjacency, radius, num_layers=3, grid_size=16):
+def build_tile_image_mesh(image, corners, normal, scale=1.0):
+    """Raster-colored background clipped to the tile's actual triangle fan.
+
+    The image half-diagonal is scale times the maximum center/corner distance.
+    Samples are bounded to 64 pixels per side; aspect ratio uses original size.
+    Lift each clipped pixel onto the original tile triangles, just below labels.
+    """
+    scale = max(0.1, min(3.0, float(scale)))
+    center = tuple(sum(p[k] for p in corners) / len(corners) for k in range(3))
+    tile_radius = max(math.dist(center, p) for p in corners)
+    u, v = _tangent_basis(normal)
+    u, v = tuple(-x for x in u), tuple(-x for x in v)
+    project = lambda p: tuple(sum((p[k] - center[k]) * axis[k] for k in range(3)) for axis in (u, v))
+    polygon = [project(p) for p in corners]
+    width, height = image.size
+    factor = 2 * tile_radius * scale / math.hypot(width, height)
+    extent_x, extent_y = width * factor, height * factor
+    raster = image.convert("RGBA")
+    raster.thumbnail((64, 64), Image.Resampling.LANCZOS)
+    step_x, step_y = extent_x / raster.width, extent_y / raster.height
+    offset = math.sqrt(sum(x*x for x in center)) * 0.0002
+    vertices, faces, colors = [], [], []
+
+    def cross(a, b, p):
+        return (b[0]-a[0])*(p[1]-a[1]) - (b[1]-a[1])*(p[0]-a[0])
+
+    for j in range(1, len(corners)-1):
+        tri = (polygon[0], polygon[j], polygon[j+1])
+        points = (corners[0], corners[j], corners[j+1])
+        area = cross(*tri)
+        if abs(area) < 1e-15:
+            continue
+        sign = 1 if area > 0 else -1
+        for row in range(raster.height):
+            top = extent_y / 2 - row * step_y
+            for col in range(raster.width):
+                red, green, blue, alpha = raster.getpixel((col, row))
+                if not alpha:
+                    continue
+                left = -extent_x / 2 + col * step_x
+                clipped = [(left, top), (left+step_x, top),
+                           (left+step_x, top-step_y), (left, top-step_y)]
+                # Sutherland-Hodgman clipping against this tile triangle.
+                for a, b in zip(tri, tri[1:] + tri[:1]):
+                    output = []
+                    for start, end in zip(clipped, clipped[1:] + clipped[:1]):
+                        ds, de = sign*cross(a, b, start), sign*cross(a, b, end)
+                        if (ds >= 0) != (de >= 0):
+                            t = ds / (ds-de)
+                            output.append(tuple(start[k] + t*(end[k]-start[k]) for k in range(2)))
+                        if de >= 0:
+                            output.append(end)
+                    clipped = output
+                    if not clipped:
+                        break
+                if len(clipped) < 3:
+                    continue
+                base = len(vertices)
+                for p in clipped:
+                    weights = (cross(tri[1], tri[2], p)/area,
+                               cross(tri[2], tri[0], p)/area,
+                               cross(tri[0], tri[1], p)/area)
+                    vertices.append(tuple(sum(weights[i]*points[i][k] for i in range(3))
+                                          + normal[k]*offset for k in range(3)))
+                for i in range(1, len(clipped)-1):
+                    faces.append((base, base+i, base+i+1))
+                    colors.append(f"rgba({red},{green},{blue},{alpha/255:.6f})")
+    return vertices, faces, colors
+
+
+def build_tile_label_decal(tile_id, char, tile_centroids, adjacency, radius, num_layers=3, grid_size=16, *, font=None, fit_text=False, extent_ratio=0.6, upright=False, surface_only=False):
     """Build a flat, tile-surface-parallel pixel-art decal for `char` on tile
     `tile_id`, using the SAME tangent basis as the tile's own hex corners so
     it lies flush and upright relative to the tile rather than billboarding
@@ -333,6 +424,10 @@ def build_tile_label_decal(tile_id, char, tile_centroids, adjacency, radius, num
     """
     centroid = tile_centroids[tile_id]
     u, v = _tangent_basis(centroid)
+    if upright:
+        # The corner basis points down relative to world Z. Flip both tangent
+        # axes for readable authoring text without changing tile geometry.
+        u, v = tuple(-value for value in u), tuple(-value for value in v)
 
     # Tile's characteristic size, from the average distance to its neighbors (a
     # hex tile's neighbor spacing directly reflects its true footprint).
@@ -344,9 +439,9 @@ def build_tile_label_decal(tile_id, char, tile_centroids, adjacency, radius, num
         ) / len(neighbor_ids)
     else:
         avg_neighbor_dist = 0.3
-    char_extent = avg_neighbor_dist * 0.6
+    char_extent = avg_neighbor_dist * extent_ratio
 
-    mask = rasterize_character_mask(char, grid_size=grid_size)
+    mask = rasterize_character_mask(char, grid_size=grid_size, font=font, fit_text=fit_text)
     pixel_step = char_extent / grid_size
     half_pixel = pixel_step / 2
 
@@ -356,6 +451,8 @@ def build_tile_label_decal(tile_id, char, tile_centroids, adjacency, radius, num
     # grazing view angles.
     layer_step = radius * 0.002
     layer_radii = [radius + (layer - num_layers + 0.5) * layer_step for layer in range(2 * num_layers)]
+    if surface_only:
+        layer_radii = [radius + 0.5 * layer_step]
 
     vertices = []
     faces = []
@@ -387,7 +484,7 @@ def build_tile_label_decal(tile_id, char, tile_centroids, adjacency, radius, num
     return vertices, faces
 
 
-def build_tile_label_decals(tile_label_chars, tile_centroids, adjacency, tile_colors, radius, num_layers=3, grid_size=16):
+def build_tile_label_decals(tile_label_chars, tile_centroids, adjacency, tile_colors, radius, num_layers=3, grid_size=16, *, font=None, fit_text=False, extent_ratio=0.6, upright=False, surface_only=False):
     """Combine per-tile decals (see build_tile_label_decal) into one mesh plus
     a parallel per-face color list, each tile's decal colored as the inverse
     of that tile's own resolved color so it always contrasts."""
@@ -399,6 +496,7 @@ def build_tile_label_decals(tile_label_chars, tile_centroids, adjacency, tile_co
             continue
         vertices, faces = build_tile_label_decal(
             tile_id, char, tile_centroids, adjacency, radius, num_layers=num_layers, grid_size=grid_size,
+            font=font, fit_text=fit_text, extent_ratio=extent_ratio, upright=upright, surface_only=surface_only,
         )
         if not faces:
             continue

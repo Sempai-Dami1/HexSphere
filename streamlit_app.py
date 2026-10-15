@@ -1,4 +1,5 @@
 import html
+import hashlib
 import io
 import json
 import math
@@ -8,13 +9,14 @@ from pathlib import Path
 
 import plotly.graph_objects as go
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 import object_package
 import object_package_consumer
 import object_recipe
 import object_recipe_workbench
 import picture_sphere
+import animated_viewer
 
 st.set_page_config(page_title="HexSphere Studio", page_icon="Hex", layout="wide")
 
@@ -376,6 +378,10 @@ def format_unicode_value(codepoint, value_format):
 
 def select_unichar(codepoint):
     st.session_state.uni_selected_char = codepoint
+    st.session_state.unicode_raster_request = codepoint
+    st.session_state.unicode_grid_refresh = True
+    if st.session_state.get("picture_sphere_auto_unicode", False):
+        apply_selected_unicode_to_picture_sphere()
 
 
 def reset_unicode_offsets():
@@ -1008,6 +1014,9 @@ def generate_picture_sphere_geometry(s):
         st.session_state.picture_sphere_tile_colors = {}
         st.session_state.picture_sphere_anchor_tile_id = 0
         st.session_state.picture_sphere_tile_labels = {}
+        st.session_state.picture_sphere_tile_names = {}
+        st.session_state.picture_sphere_tile_images = {}
+        st.session_state.pop("picture_sphere_image_error", None)
 
     vertices, faces, edges, face_tile_ids, tile_centroids, tile_corner_ids, adjacency = picture_sphere.build_picture_sphere(
         s["radius"],
@@ -1018,14 +1027,6 @@ def generate_picture_sphere_geometry(s):
     ring_of_tile, label_of_tile = picture_sphere.compute_tile_rings_and_labels(tile_centroids, adjacency, anchor_tile_id)
 
     tile_base_colors = None
-    uploaded_image = st.session_state.get("picture_sphere_image_upload")
-    if uploaded_image is not None:
-        try:
-            image = Image.open(io.BytesIO(uploaded_image.getvalue()))
-            tile_base_colors = picture_sphere.sample_tile_colors_from_image(image, tile_centroids)
-        except Exception:
-            tile_base_colors = None
-
     paint_overrides = st.session_state.setdefault("picture_sphere_tile_colors", {})
     default_color = "#3568ad"
     tile_colors = [
@@ -1040,7 +1041,21 @@ def generate_picture_sphere_geometry(s):
     num_label_layers = st.session_state.get("picture_sphere_label_layers", 3)
     label_mesh_vertices, label_mesh_faces, label_mesh_colors = picture_sphere.build_tile_label_decals(
         tile_label_chars, tile_centroids, adjacency, tile_colors, s["radius"], num_layers=num_label_layers,
+        font=picture_sphere.get_unicode_decal_font(), upright=True,
     )
+    name_overrides = st.session_state.setdefault("picture_sphere_tile_names", {})
+    image_vertices, image_faces, image_colors = [], [], []
+    for tile_id, entry in st.session_state.setdefault("picture_sphere_tile_images", {}).items():
+        if not 0 <= tile_id < len(tile_centroids):
+            continue
+        iv, triangles, colors = cached_picture_sphere_tile_image(
+            entry["data"], tuple(vertices[i] for i in tile_corner_ids[tile_id]),
+            tile_centroids[tile_id], entry["scale"],
+        )
+        offset = len(image_vertices)
+        image_vertices.extend(iv)
+        image_faces.extend(tuple(i+offset for i in tri) for tri in triangles)
+        image_colors.extend(colors)
 
     # Stashed for later phases (viewer facecolor wiring).
     st.session_state.picture_sphere_tile_data = {
@@ -1051,13 +1066,53 @@ def generate_picture_sphere_geometry(s):
         "anchor_tile_id": anchor_tile_id,
         "ring_of_tile": ring_of_tile,
         "label_of_tile": label_of_tile,
+        "tile_names": [name_overrides.get(tile_id, label_of_tile[tile_id]) for tile_id in range(len(tile_centroids))],
         "tile_base_colors": tile_base_colors,
         "tile_colors": tile_colors,
         "label_mesh_vertices": label_mesh_vertices,
         "label_mesh_faces": label_mesh_faces,
         "label_mesh_colors": label_mesh_colors,
+        "image_mesh": (image_vertices, image_faces, image_colors),
     }
     return vertices, faces, edges
+
+
+@st.cache_data(max_entries=32, show_spinner=False)
+def cached_picture_sphere_tile_image(payload, corners, normal, scale):
+    with Image.open(io.BytesIO(payload), formats=["PNG", "JPEG"]) as source:
+        return picture_sphere.build_tile_image_mesh(ImageOps.exif_transpose(source), corners, normal, scale)
+
+
+def upload_picture_sphere_tile_image(upload_key, tile_id, tile_sig):
+    # Bind the upload to the tile displayed when its widget was rendered.
+    if st.session_state.get("picture_sphere_tile_sig") != tile_sig:
+        return
+    uploaded = st.session_state.get(upload_key)
+    images = st.session_state.setdefault("picture_sphere_tile_images", {})
+    st.session_state.pop("picture_sphere_image_error", None)
+    if uploaded is None:
+        images.pop(tile_id, None)
+        return
+    try:
+        payload = uploaded.getvalue()
+        with Image.open(io.BytesIO(payload), formats=["PNG", "JPEG"]) as image:
+            image.load()
+        images[tile_id] = {"data": payload, "name": uploaded.name,
+                           "scale": st.session_state.get("picture_sphere_image_scale", 1.0)}
+    except (OSError, ValueError, Image.DecompressionBombError):
+        st.session_state.picture_sphere_image_error = "Could not read this PNG/JPEG image. The saved tile background was kept."
+
+
+def scale_picture_sphere_tile_image(tile_id):
+    entry = st.session_state.get("picture_sphere_tile_images", {}).get(tile_id)
+    if entry:
+        entry["scale"] = st.session_state.picture_sphere_image_scale
+
+
+def remove_picture_sphere_tile_image(tile_id):
+    st.session_state.get("picture_sphere_tile_images", {}).pop(tile_id, None)
+    # A fresh uploader prevents a previously selected file appearing still applied.
+    st.session_state["picture_sphere_upload_revision"] = st.session_state.get("picture_sphere_upload_revision", 0) + 1
 
 
 def generate_picture_sphere_test_pattern():
@@ -1070,26 +1125,76 @@ def generate_picture_sphere_test_pattern():
     label_mode = "random" if st.session_state.get("picture_sphere_test_label_mode") == "Random characters" else "alpha"
     labels = picture_sphere.generate_test_tile_labels(num_tiles, mode=label_mode)
     st.session_state.picture_sphere_tile_labels = dict(enumerate(labels))
+    st.session_state.pop("_picture_sphere_editor_signature", None)
 
 
 def clear_picture_sphere_test_pattern():
     st.session_state.picture_sphere_tile_colors = {}
     st.session_state.picture_sphere_tile_labels = {}
+    st.session_state.pop("_picture_sphere_editor_signature", None)
+
+
+def selected_picture_sphere_tile_id():
+    tile_data = st.session_state.get("picture_sphere_tile_data") or {}
+    target = st.session_state.get("picture_sphere_target_tile_label")
+    return next((tile_id for tile_id, label in tile_data.get("label_of_tile", {}).items() if label == target), None)
+
+
+def sync_picture_sphere_tile_editor():
+    tile_id = selected_picture_sphere_tile_id()
+    if tile_id is None:
+        return
+    data = st.session_state.picture_sphere_tile_data
+    st.session_state.picture_sphere_tile_name = data["tile_names"][tile_id]
+    st.session_state.picture_sphere_paint_character = st.session_state.get("picture_sphere_tile_labels", {}).get(tile_id, "")
+    st.session_state.picture_sphere_paint_color = data["tile_colors"][tile_id]
+    st.session_state.picture_sphere_image_scale = st.session_state.get("picture_sphere_tile_images", {}).get(tile_id, {}).get("scale", 1.0)
+    st.session_state["_picture_sphere_editor_signature"] = (st.session_state.picture_sphere_tile_sig, tile_id)
+
+
+def rename_selected_picture_sphere_tile(tile_id=None):
+    if tile_id is None:
+        tile_id = selected_picture_sphere_tile_id()
+    if tile_id is None:
+        return
+    names = st.session_state.setdefault("picture_sphere_tile_names", {})
+    name = st.session_state.get("picture_sphere_tile_name", "").strip()
+    if name:
+        names[tile_id] = name
+    else:
+        names.pop(tile_id, None)
+        st.session_state.picture_sphere_tile_name = st.session_state.picture_sphere_tile_data["label_of_tile"][tile_id]
+
+
+def sync_picture_sphere_unicode_mode():
+    if st.session_state.get("picture_sphere_auto_unicode", False):
+        apply_selected_unicode_to_picture_sphere()
+
+
+def apply_selected_unicode_to_picture_sphere(request_full_rerun=False):
+    tile_id = selected_picture_sphere_tile_id()
+    if st.session_state.active_object != "PictureSphere" or tile_id is None:
+        return
+    codepoint = st.session_state.get("uni_selected_char", 0x2600)
+    char = chr(codepoint)
+    st.session_state.setdefault("picture_sphere_tile_labels", {})[tile_id] = char
+    st.session_state.picture_sphere_paint_character = char
+    if request_full_rerun:
+        st.session_state.picture_sphere_unicode_refresh = True
 
 
 def paint_selected_picture_sphere_tile():
     tile_data = st.session_state.get("picture_sphere_tile_data")
     if not tile_data:
         return
-    label_to_tile_id = {label: tile_id for tile_id, label in tile_data["label_of_tile"].items()}
-    tile_id = label_to_tile_id.get(st.session_state.get("picture_sphere_target_tile_label"))
+    tile_id = selected_picture_sphere_tile_id()
     if tile_id is None:
         return
     st.session_state.setdefault("picture_sphere_tile_colors", {})[tile_id] = st.session_state.picture_sphere_paint_color
-    char = st.session_state.get("picture_sphere_paint_character", "").strip().upper()
+    char = st.session_state.get("picture_sphere_paint_character", "")
     tile_labels = st.session_state.setdefault("picture_sphere_tile_labels", {})
     if char:
-        tile_labels[tile_id] = char[0]
+        tile_labels[tile_id] = char
     else:
         tile_labels.pop(tile_id, None)
 
@@ -1097,6 +1202,7 @@ def paint_selected_picture_sphere_tile():
 def reset_picture_sphere_paint():
     st.session_state.picture_sphere_tile_colors = {}
     st.session_state.picture_sphere_tile_labels = {}
+    st.session_state.pop("_picture_sphere_editor_signature", None)
 
 
 def build_cube(size):
@@ -2199,10 +2305,30 @@ def apply_vis_default():
     st.session_state.xy_spin = 0
     st.session_state.yz_spin = 0
     st.session_state.zx_spin = 0
+    st.session_state["_viewer_spin_epoch"] = time.time()
+    st.session_state["_viewer_camera_revision"] = st.session_state.get("_viewer_camera_revision", 0) + 1
 
 
 def set_spin(spin_key, direction):
+    sync_spin_angles()
     st.session_state[spin_key] = direction
+
+
+def sync_spin_angles(skip_axis=None, now=None):
+    """Settle time-based browser rotation on control events, before widgets render."""
+    now = time.time() if now is None else now
+    previous = st.session_state.get("_viewer_spin_epoch", now)
+    elapsed = max(0.0, now - previous)
+    next_speed = st.session_state.angle_resolution * st.session_state.anim_ticks_per_second
+    speed = st.session_state.get("_viewer_spin_speed", next_speed)
+    for axis in ("xy", "yz", "zx"):
+        key = f"rotation_{axis}"
+        direction = st.session_state.get(f"{axis}_spin", 0)
+        if direction and key != skip_axis:
+            value = st.session_state[key] + direction * speed * elapsed
+            st.session_state[key] = ((value + 180) % 360) - 180
+    st.session_state["_viewer_spin_epoch"] = now
+    st.session_state["_viewer_spin_speed"] = next_speed
 
 
 def step_spin_angle(axis_key, spin_key):
@@ -2214,6 +2340,7 @@ def step_spin_angle(axis_key, spin_key):
 
 
 def apply_vis_state(state_name):
+    sync_spin_angles()
     is_save_mode = bool(st.session_state.get("save_vis_states", True))
     if is_save_mode:
         st.session_state.vis_user_states[state_name] = {
@@ -2224,6 +2351,7 @@ def apply_vis_state(state_name):
         state_values = st.session_state.vis_user_states.get(state_name, {})
         for key, val in state_values.items():
             st.session_state[key] = val
+        st.session_state["_viewer_spin_speed"] = st.session_state.angle_resolution * st.session_state.anim_ticks_per_second
         st.session_state["_preset_toast"] = f"Applied {state_name} viewport controls!"
 
 
@@ -2407,15 +2535,9 @@ with st.sidebar:
 
     if st.session_state.active_object == "PictureSphere":
         st.divider()
-        st.markdown("### Picture Sphere Image")
-        st.file_uploader(
-            "Upload an image to map onto the sphere",
-            type=["png", "jpg", "jpeg"],
-            key="picture_sphere_image_upload",
-            help="Sampled onto each hex/pentagon tile using an equirectangular projection.",
-        )
-
         st.markdown("### Tile Inspection & Paintbrush")
+        st.toggle("Show tile names", key="picture_sphere_show_tile_names",
+                  help="Temporarily show tile names instead of character overlays. Backgrounds and saved characters are preserved.")
         tile_data = st.session_state.get("picture_sphere_tile_data") or {}
         label_of_tile = tile_data.get("label_of_tile", {})
         num_tiles = len(tile_data.get("tile_centroids", []))
@@ -2431,14 +2553,57 @@ with st.sidebar:
                 label_of_tile.items(),
                 key=lambda item: (0, 0) if item[1] == "Anchor-0" else (int(item[1].split("-")[0][1:]), int(item[1].split("-")[1][1:])),
             )]
-            st.selectbox("Target tile (Ring-Sequence)", options=sorted_labels, key="picture_sphere_target_tile_label")
+            label_to_id = {label: tile_id for tile_id, label in label_of_tile.items()}
+            tile_names = tile_data.get("tile_names", [])
+
+            def format_tile_target(label):
+                tile_id = label_to_id[label]
+                name = tile_names[tile_id] if tile_id < len(tile_names) else label
+                return label if name == label else f"{label} — {name}"
+
+            st.selectbox("Target tile (Ring-Sequence)", options=sorted_labels, key="picture_sphere_target_tile_label",
+                         format_func=format_tile_target)
+            selected_tile_id = selected_picture_sphere_tile_id()
+            editor_signature = (st.session_state.picture_sphere_tile_sig, selected_tile_id)
+            if (st.session_state.get("_picture_sphere_editor_signature") != editor_signature
+                    or any(key not in st.session_state for key in ("picture_sphere_tile_name", "picture_sphere_paint_character", "picture_sphere_paint_color", "picture_sphere_image_scale"))):
+                sync_picture_sphere_tile_editor()
+            st.text_input("Tile name", key="picture_sphere_tile_name", max_chars=64,
+                          on_change=rename_selected_picture_sphere_tile, args=(selected_picture_sphere_tile_id(),),
+                          help="Local display name; the ring/sequence address stays unchanged. Clear to restore the address as its name.")
             st.color_picker("Paint color", value="#3568ad", key="picture_sphere_paint_color")
+            st.markdown("### Focused tile image")
+            tile_sig = st.session_state.picture_sphere_tile_sig
+            upload_key = f"picture_sphere_tile_image_upload_{tile_sig}_{selected_tile_id}_{st.session_state.get('picture_sphere_upload_revision', 0)}"
+            st.file_uploader(
+                "Upload an image to map onto the focused tile", type=["png", "jpg", "jpeg"],
+                key=upload_key, max_upload_size=10, on_change=upload_picture_sphere_tile_image,
+                args=(upload_key, selected_tile_id, tile_sig),
+                help="Centered, with its aspect ratio preserved. Image detail is sampled up to 64 pixels per side and clipped to this tile.",
+            )
+            st.slider("Image radius / tile radius", min_value=0.1, max_value=3.0,
+                      step=0.1, key="picture_sphere_image_scale",
+                      on_change=scale_picture_sphere_tile_image, args=(selected_tile_id,),
+                      help="The image's center-to-corner radius as a fraction of this tile's center-to-corner radius. Default: 1.0.")
+            image_entry = st.session_state.get("picture_sphere_tile_images", {}).get(selected_tile_id)
+            if image_entry:
+                st.caption(f"Saved image: {image_entry['name']}")
+                st.button("Remove focused tile image", key="picture_sphere_remove_image",
+                          on_click=remove_picture_sphere_tile_image, args=(selected_tile_id,))
+            if st.session_state.get("picture_sphere_image_error"):
+                st.error(st.session_state.picture_sphere_image_error)
             st.text_input(
                 "Character label (optional)",
                 key="picture_sphere_paint_character",
-                max_chars=1,
-                help="Shown on the painted tile in the inverse of the paint color, so it always stays visible.",
+                help="Exact Unicode overlay, including lower-case or combined characters. Empty clears it when painting.",
             )
+            selected_cp = st.session_state.get("uni_selected_char", 0x2600)
+            st.caption(f"Selected Unicode: U+{selected_cp:04X}. Apply it without changing the tile background.")
+            st.toggle("Use selected Unicode on tile", key="picture_sphere_auto_unicode",
+                      on_change=sync_picture_sphere_unicode_mode,
+                      help="Apply the current character now and each newly selected Unicode character "
+                           "to the focused tile. Turning this off keeps its existing overlay.")
+            st.caption("Overlays use a local symbol font; glyph coverage depends on installed fonts. Names and tile appearance reset when sphere geometry changes.")
             st.number_input(
                 "Label layers",
                 min_value=1,
@@ -2595,6 +2760,8 @@ def resolve_active_label_mesh():
     """(vertices, faces, colors) for the PictureSphere tile-character decal mesh, else None."""
     if st.session_state.active_object != "PictureSphere":
         return None
+    if st.session_state.get("picture_sphere_show_tile_names", False):
+        return None
     tile_data = st.session_state.get("picture_sphere_tile_data")
     if not tile_data:
         return None
@@ -2605,62 +2772,135 @@ def resolve_active_label_mesh():
     )
 
 
+def render_active_animated_viewer(vertices, faces, edge_indices):
+    """Build static Plotly appearance once per change; rotation is browser-local."""
+    scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
+    # Objects without a grid-width widget lose its key during widget cleanup;
+    # viewer fragment reruns still need a line width, separate from tube walls.
+    thickness = st.session_state.get("thickness", DEFAULTS["thickness"])
+    face_colors = resolve_active_face_colors(faces)
+    label_mesh = resolve_active_label_mesh()
+    image_mesh = None
+    if st.session_state.active_object == "PictureSphere":
+        image_mesh = st.session_state.get("picture_sphere_tile_data", {}).get("image_mesh")
+    name_display = None
+    if st.session_state.active_object == "PictureSphere" and st.session_state.get("picture_sphere_show_tile_names", False):
+        data = st.session_state.get("picture_sphere_tile_data") or {}
+        if data.get("tile_names"):
+            name_display = (tuple(data["tile_names"]), tuple(data["tile_centroids"]))
+    inputs = (vertices, faces, edge_indices, thickness, scale,
+              st.session_state.vis_color, st.session_state.vis_alpha,
+              st.session_state.vis_flatshading, st.session_state.vis_show_grid,
+              face_colors, label_mesh, name_display, image_mesh)
+    if inputs != st.session_state.get("_viewer_source_inputs"):
+        display_mesh = label_mesh
+        if name_display:
+            # Names follow the tile surface like Unicode decals. A text trace
+            # billboard clips at grazing angles and leaks rear labels outside
+            # the sphere silhouette, making tile identification ambiguous.
+            display_mesh = picture_sphere.build_tile_label_decals(
+                dict(enumerate(name_display[0])), data["tile_centroids"], data["adjacency"],
+                data["tile_colors"], st.session_state.picture_sphere_tile_sig[0],
+                num_layers=1, grid_size=64, font=picture_sphere.get_unicode_decal_font(56),
+                fit_text=True, extent_ratio=0.9, upright=True, surface_only=True,
+            )
+        figure = build_plotly_figure(
+            vertices, faces, edge_indices, thickness=thickness,
+            angles=(0, 0, 0), scale=scale, color=st.session_state.vis_color,
+            alpha=st.session_state.vis_alpha, flatshading=st.session_state.vis_flatshading,
+            show_grid=st.session_state.vis_show_grid, face_colors=face_colors, label_mesh=display_mesh,
+        )
+        if name_display:
+            figure.data[-1].name = "Tile names"
+            figure.data[-1].meta = {"tile_names": list(name_display[0])}
+        if image_mesh and image_mesh[1]:
+            image_vertices, image_faces, image_colors = image_mesh
+            scaled = rotate_vertices(image_vertices, (0, 0, 0), scale)
+            figure.add_trace(go.Mesh3d(
+                x=[p[0] for p in scaled], y=[p[1] for p in scaled], z=[p[2] for p in scaled],
+                i=[f[0] for f in image_faces], j=[f[1] for f in image_faces], k=[f[2] for f in image_faces],
+                facecolor=image_colors, opacity=1.0, flatshading=True,
+                lighting=dict(ambient=1.0, diffuse=0.0, specular=0.0),
+                hoverinfo="none", name="Tile images",
+            ))
+            if display_mesh and display_mesh[1]:
+                figure.data = figure.data[:-2] + (figure.data[-1], figure.data[-2])
+        source_text = figure.to_json()
+        st.session_state["_viewer_source_figure"] = json.loads(source_text)
+        st.session_state["_viewer_source_revision"] = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        st.session_state["_viewer_source_inputs"] = inputs
+    animated_viewer.render_animated_viewer(
+        st.session_state["_viewer_source_figure"],
+        source_revision=st.session_state["_viewer_source_revision"],
+        angles=tuple(st.session_state[f"rotation_{axis}"] for axis in ("xy", "yz", "zx")),
+        spins=tuple(st.session_state.get(f"{axis}_spin", 0) for axis in ("xy", "yz", "zx")),
+        degrees_per_second=st.session_state.angle_resolution * st.session_state.anim_ticks_per_second,
+        epoch=st.session_state["_viewer_spin_epoch"],
+        revision=st.session_state.get("_viewer_camera_revision", 0),
+    )
+
+
 @st.fragment
 def render_viewer_section(vertices, faces, edge_indices):
     """Isolated fragment so rotation controls and spin animation only re-render the viewer, not the whole page."""
+    sync_spin_angles()
     if st.session_state.attach_vis_controls:
-        # Auto-rotate animation is disabled for now (perf tuning), so spin never advances.
-        st.session_state.xy_spin = 0
-        st.session_state.yz_spin = 0
-        st.session_state.zx_spin = 0
-        step_spin_angle("rotation_xy", "xy_spin")
-        step_spin_angle("rotation_yz", "yz_spin")
-        step_spin_angle("rotation_zx", "zx_spin")
+        # Keep the active direction visible using native button state. Scope
+        # green to these six controls so other primary buttons retain the theme.
+        st.html("""<style>
+            :is(.st-key-xy_dec, .st-key-xy_inc,
+                .st-key-yz_dec, .st-key-yz_inc,
+                .st-key-zx_dec, .st-key-zx_inc) button[kind="primary"] {
+                background-color: #15803d;
+                border-color: #15803d;
+                color: #ffffff;
+            }
+        </style>""")
 
         viewer_col, vis_col = st.columns([3, 1])
         with vis_col:
             st.subheader("3. Visualization Controls")
             st.markdown("#### Manual Rotation")
-            xy_row = st.columns([7, 1, 1, 1])
-            xy_row[0].slider("XY angle", -180.0, 180.0, key="rotation_xy")
-            xy_row[1].button("⏪", key="xy_dec", width='stretch', disabled=True, on_click=set_spin, args=("xy_spin", -1))
-            xy_row[2].button("⏹", key="xy_stop", width='stretch', disabled=True, on_click=set_spin, args=("xy_spin", 0))
-            xy_row[3].button("⏩", key="xy_inc", width='stretch', disabled=True, on_click=set_spin, args=("xy_spin", 1))
+            xy_row = st.columns([5, 2, 2, 2])
+            xy_row[0].slider("XY angle", -180.0, 180.0, value=float(st.session_state.rotation_xy), key="rotation_xy", on_change=sync_spin_angles, args=("rotation_xy",))
+            xy_row[1].button("⏪", key="xy_dec", type="primary" if st.session_state.xy_spin == -1 else "secondary", width='stretch', on_click=set_spin, args=("xy_spin", -1))
+            xy_row[2].button("⏹", key="xy_stop", width='stretch', on_click=set_spin, args=("xy_spin", 0))
+            xy_row[3].button("⏩", key="xy_inc", type="primary" if st.session_state.xy_spin == 1 else "secondary", width='stretch', on_click=set_spin, args=("xy_spin", 1))
 
-            yz_row = st.columns([7, 1, 1, 1])
-            yz_row[0].slider("YZ angle", -180.0, 180.0, key="rotation_yz")
-            yz_row[1].button("⏪", key="yz_dec", width='stretch', disabled=True, on_click=set_spin, args=("yz_spin", -1))
-            yz_row[2].button("⏹", key="yz_stop", width='stretch', disabled=True, on_click=set_spin, args=("yz_spin", 0))
-            yz_row[3].button("⏩", key="yz_inc", width='stretch', disabled=True, on_click=set_spin, args=("yz_spin", 1))
+            yz_row = st.columns([5, 2, 2, 2])
+            yz_row[0].slider("YZ angle", -180.0, 180.0, value=float(st.session_state.rotation_yz), key="rotation_yz", on_change=sync_spin_angles, args=("rotation_yz",))
+            yz_row[1].button("⏪", key="yz_dec", type="primary" if st.session_state.yz_spin == -1 else "secondary", width='stretch', on_click=set_spin, args=("yz_spin", -1))
+            yz_row[2].button("⏹", key="yz_stop", width='stretch', on_click=set_spin, args=("yz_spin", 0))
+            yz_row[3].button("⏩", key="yz_inc", type="primary" if st.session_state.yz_spin == 1 else "secondary", width='stretch', on_click=set_spin, args=("yz_spin", 1))
 
-            zx_row = st.columns([7, 1, 1, 1])
-            zx_row[0].slider("ZX angle", -180.0, 180.0, key="rotation_zx")
-            zx_row[1].button("⏪", key="zx_dec", width='stretch', disabled=True, on_click=set_spin, args=("zx_spin", -1))
-            zx_row[2].button("⏹", key="zx_stop", width='stretch', disabled=True, on_click=set_spin, args=("zx_spin", 0))
-            zx_row[3].button("⏩", key="zx_inc", width='stretch', disabled=True, on_click=set_spin, args=("zx_spin", 1))
+            zx_row = st.columns([5, 2, 2, 2])
+            zx_row[0].slider("ZX angle", -180.0, 180.0, value=float(st.session_state.rotation_zx), key="rotation_zx", on_change=sync_spin_angles, args=("rotation_zx",))
+            zx_row[1].button("⏪", key="zx_dec", type="primary" if st.session_state.zx_spin == -1 else "secondary", width='stretch', on_click=set_spin, args=("zx_spin", -1))
+            zx_row[2].button("⏹", key="zx_stop", width='stretch', on_click=set_spin, args=("zx_spin", 0))
+            zx_row[3].button("⏩", key="zx_inc", type="primary" if st.session_state.zx_spin == 1 else "secondary", width='stretch', on_click=set_spin, args=("zx_spin", 1))
 
-            st.slider("Angle resolution (deg/tick)", 1.0, 15.0, step=0.5, key="angle_resolution", disabled=True)
-            st.slider("Animation speed (ticks/sec)", 1, 30, step=1, key="anim_ticks_per_second", disabled=True)
-            st.caption("Auto-rotate animation is temporarily disabled (performance tuning in progress). Drag the sliders above to rotate manually.")
+            st.slider("Angle resolution (deg/tick)", 1.0, 15.0, step=0.5, value=float(st.session_state.angle_resolution), key="angle_resolution", on_change=sync_spin_angles)
+            st.slider("Animation speed (ticks/sec)", 1, 30, step=1, value=int(st.session_state.anim_ticks_per_second), key="anim_ticks_per_second", on_change=sync_spin_angles)
+            st.caption("Spin runs in the viewer. Pause an axis to settle its angle slider; speed is angle resolution × ticks/sec.")
 
             st.markdown("#### Scale & Appearance")
-            st.toggle("Auto-scale", key="vis_auto_scale")
-            st.slider("Scale", 0.1, 3.0, step=0.05, key="vis_scale", disabled=st.session_state.vis_auto_scale)
+            st.toggle("Auto-scale", value=st.session_state.vis_auto_scale, key="vis_auto_scale")
+            st.slider("Scale", 0.1, 3.0, step=0.05, value=float(st.session_state.vis_scale), key="vis_scale", disabled=st.session_state.vis_auto_scale)
             is_picture_sphere = st.session_state.active_object == "PictureSphere"
-            st.color_picker("Surface color", key="vis_color", disabled=is_picture_sphere)
-            st.selectbox("Material", options=list(MATERIAL_PRESETS.keys()), key="vis_material", on_change=apply_material)
-            st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, key="vis_alpha", disabled=is_picture_sphere)
+            st.color_picker("Surface color", value=st.session_state.vis_color, key="vis_color", disabled=is_picture_sphere)
+            st.selectbox("Material", options=list(MATERIAL_PRESETS.keys()), index=list(MATERIAL_PRESETS).index(st.session_state.vis_material), key="vis_material", on_change=apply_material)
+            st.slider("Alpha (opacity)", 0.0, 1.0, step=0.01, value=float(st.session_state.vis_alpha), key="vis_alpha", disabled=is_picture_sphere)
             if is_picture_sphere:
                 st.caption("Surface color and Alpha are driven by each tile's paint/photo color for PictureSphere and always render at full opacity.")
-            st.toggle("Show grid", key="vis_show_grid")
-            st.toggle("Flat shading", key="vis_flatshading")
+            st.toggle("Show grid", value=st.session_state.vis_show_grid, key="vis_show_grid")
+            st.toggle("Flat shading", value=st.session_state.vis_flatshading, key="vis_flatshading")
 
             st.markdown("#### Viewport States")
             vis_btn_col1, vis_btn_col2, vis_btn_col3 = st.columns(3)
             vis_btn_col1.button("Default", width='stretch', on_click=apply_vis_default, key="vis_default_btn")
             vis_btn_col2.button("State1", width='stretch', on_click=apply_vis_state, args=("State1",), key="vis_state1_btn")
             vis_btn_col3.button("State2", width='stretch', on_click=apply_vis_state, args=("State2",), key="vis_state2_btn")
-            is_vis_save_mode = st.toggle("Save viewport states", key="save_vis_states", value=True)
+            is_vis_save_mode = st.toggle("Save viewport states", key="save_vis_states", value=st.session_state.get("save_vis_states", True))
             if is_vis_save_mode:
                 st.caption("Click State1/State2 to Save Viewport Controls")
             else:
@@ -2668,49 +2908,22 @@ def render_viewer_section(vertices, faces, edge_indices):
 
         with viewer_col:
             st.subheader("2. Viewer (3D Viewport)")
-            scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
-            fig = build_plotly_figure(
-                vertices,
-                faces,
-                edge_indices,
-                thickness=st.session_state.thickness,
-                angles=(st.session_state.rotation_xy, st.session_state.rotation_yz, st.session_state.rotation_zx),
-                scale=scale,
-                color=st.session_state.vis_color,
-                alpha=st.session_state.vis_alpha,
-                flatshading=st.session_state.vis_flatshading,
-                show_grid=st.session_state.vis_show_grid,
-                face_colors=resolve_active_face_colors(faces),
-                label_mesh=resolve_active_label_mesh(),
-            )
-            st.plotly_chart(fig, width='stretch')
-
-        if any(st.session_state.get(k, 0) for k in ("xy_spin", "yz_spin", "zx_spin")):
-            time.sleep(1.0 / st.session_state.anim_ticks_per_second)
-            st.rerun(scope="fragment")
+            render_active_animated_viewer(vertices, faces, edge_indices)
     else:
         st.subheader("Viewer (3D Viewport) — Visualization Controls Detached")
-        scale = 1.0 if st.session_state.vis_auto_scale else st.session_state.vis_scale
-        fig = build_plotly_figure(
-            vertices,
-            faces,
-            edge_indices,
-            thickness=st.session_state.thickness,
-            angles=(st.session_state.rotation_xy, st.session_state.rotation_yz, st.session_state.rotation_zx),
-            scale=scale,
-            color=st.session_state.vis_color,
-            alpha=st.session_state.vis_alpha,
-            flatshading=st.session_state.vis_flatshading,
-            show_grid=st.session_state.vis_show_grid,
-            face_colors=resolve_active_face_colors(faces),
-            label_mesh=resolve_active_label_mesh(),
-        )
-        st.plotly_chart(fig, width='stretch')
+        st.session_state.xy_spin = 0
+        st.session_state.yz_spin = 0
+        st.session_state.zx_spin = 0
+        render_active_animated_viewer(vertices, faces, edge_indices)
 
 
 @st.fragment
 def render_unicode_panel():
     """Unicode browser kept in a fragment so character interactions stay local."""
+    grid_refresh = st.session_state.pop("unicode_grid_refresh", False)
+    picture_refresh = st.session_state.pop("picture_sphere_unicode_refresh", False)
+    if grid_refresh or picture_refresh:
+        st.rerun()
     default_block_idx = next((i for i, (block_start, _, _) in enumerate(UNICODE_BLOCKS) if block_start == 0x2600), 0)
     st.session_state.setdefault("uni_category_idx", default_block_idx)
     st.session_state.setdefault("uni_selected_char", 0x2600)
@@ -2888,6 +3101,14 @@ def render_unicode_panel():
         flip_col2.toggle("Vertical Flip", key="uni_flip_v")
         st.slider("Rotation Axis Position", -axis_limit_px, axis_limit_px, key="uni_axis_x",
                    help="Horizontal placement of the red rotation-axis line, in pixels from center.")
+        if st.session_state.active_object == "PictureSphere":
+            focused_tile = selected_picture_sphere_tile_id()
+            st.button("Apply Unicode to focused tile", key="unicode_apply_to_tile",
+                      on_click=apply_selected_unicode_to_picture_sphere, args=(True,),
+                      disabled=focused_tile is None, width="stretch")
+            if focused_tile is not None:
+                data = st.session_state.picture_sphere_tile_data
+                st.caption(f"Focused tile: {data['tile_names'][focused_tile]}. Background stays unchanged.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="unicode-section"><div class="unicode-section-title">Character Metadata</div>', unsafe_allow_html=True)
@@ -2896,13 +3117,13 @@ def render_unicode_panel():
         st.markdown('<div class="unicode-section"><div class="unicode-section-title">Character Value</div>', unsafe_allow_html=True)
         step_col, value_col, copy_col = st.columns([.55, 1.7, .55])
         if step_col.button("−", key="uni_prev", width="stretch"):
-            st.session_state.uni_selected_char = max(start, selected_cp - 1)
+            select_unichar(max(start, selected_cp - 1))
             st.rerun(scope="fragment")
         value_col.code(f"U+{selected_cp:04X}")
         if copy_col.button("Copy", key="uni_copy", width="stretch"):
             st.toast(f"{unicode_glyph(selected_cp)}  U+{selected_cp:04X} ready to copy")
         if st.button("+", key="uni_next", width="stretch"):
-            st.session_state.uni_selected_char = min(end, selected_cp + 1)
+            select_unichar(min(end, selected_cp + 1))
             st.rerun(scope="fragment")
         st.markdown('</div>', unsafe_allow_html=True)
 

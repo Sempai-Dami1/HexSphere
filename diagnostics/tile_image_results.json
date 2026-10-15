@@ -1,0 +1,11 @@
+{
+  "actual_upload": true,
+  "image_detail": true,
+  "unicode_above_image": true,
+  "names_restore_image": true,
+  "scale_default": 1,
+  "scale_changed": 0.3,
+  "focus_preserves_image": true,
+  "removal_restores_color": true,
+  "errors": []
+}

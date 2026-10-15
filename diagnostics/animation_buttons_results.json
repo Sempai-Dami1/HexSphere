@@ -1,0 +1,29 @@
+{
+  "normal": "rgb(255, 255, 255)",
+  "green": "rgb(21, 128, 61)",
+  "results": [
+    {
+      "axis": "xy",
+      "forward_green": true,
+      "reverse_green": true,
+      "previous_direction_restored": true,
+      "stop_restored": true
+    },
+    {
+      "axis": "yz",
+      "forward_green": true,
+      "reverse_green": true,
+      "previous_direction_restored": true,
+      "stop_restored": true
+    },
+    {
+      "axis": "zx",
+      "forward_green": true,
+      "reverse_green": true,
+      "previous_direction_restored": true,
+      "stop_restored": true
+    }
+  ],
+  "independent_axes": true,
+  "default_restored": true
+}

@@ -1,0 +1,35 @@
+[
+  {
+    "object": "SimpleBlock",
+    "vertices": 8,
+    "faces": 12,
+    "edges": 12,
+    "label_vertices": 0,
+    "rotation_ms": 0.053,
+    "figure_ms": 49.982,
+    "serialization_ms": 3.083,
+    "figure_bytes": 6495
+  },
+  {
+    "object": "SimpleHexShpere",
+    "vertices": 540,
+    "faces": 356,
+    "edges": 540,
+    "label_vertices": 0,
+    "rotation_ms": 2.341,
+    "figure_ms": 77.134,
+    "serialization_ms": 17.685,
+    "figure_bytes": 109423
+  },
+  {
+    "object": "PictureSphere",
+    "vertices": 540,
+    "faces": 356,
+    "edges": 540,
+    "label_vertices": 58152,
+    "rotation_ms": 1.677,
+    "figure_ms": 1679.576,
+    "serialization_ms": 487.055,
+    "figure_bytes": 4245293
+  }
+]
