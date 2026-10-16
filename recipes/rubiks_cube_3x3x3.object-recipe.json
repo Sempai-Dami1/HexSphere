@@ -1,0 +1,781 @@
+{
+  "format": "hexsphere.object-recipe",
+  "version": "0.6",
+  "object": {
+    "name": "Static Rubik's Cube 3x3x3",
+    "parameters": {},
+    "parts": [
+      {
+        "id": "block_1_1_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        },
+        "transform": {
+          "position": [
+            -1.0,
+            -1.0,
+            -1.0
+          ]
+        }
+      },
+      {
+        "id": "block_2_1_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_1_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_2_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_2_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_2_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_3_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_3_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_3_1",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_1_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_1_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_1_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_2_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_2_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_2_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_3_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_3_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_3_2",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_1_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_1_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_1_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_2_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_2_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_2_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_1_3_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_2_3_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      },
+      {
+        "id": "block_3_3_3",
+        "type": "SimpleBlock",
+        "parameters": {
+          "cube_size": 1.0,
+          "thickness": 1
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": "connect_block_2_1_1",
+        "part": "block_2_1_1",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_1_1",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_1_1",
+        "part": "block_3_1_1",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_1_1",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_2_1",
+        "part": "block_1_2_1",
+        "anchor": "bottom",
+        "target": {
+          "part": "block_1_1_1",
+          "anchor": "top"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_2_1",
+        "part": "block_2_2_1",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_2_1",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_2_1",
+        "part": "block_3_2_1",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_2_1",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_3_1",
+        "part": "block_1_3_1",
+        "anchor": "bottom",
+        "target": {
+          "part": "block_1_2_1",
+          "anchor": "top"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_3_1",
+        "part": "block_2_3_1",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_3_1",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_3_1",
+        "part": "block_3_3_1",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_3_1",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_1_2",
+        "part": "block_1_1_2",
+        "anchor": "back",
+        "target": {
+          "part": "block_1_1_1",
+          "anchor": "front"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_1_2",
+        "part": "block_2_1_2",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_1_2",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_1_2",
+        "part": "block_3_1_2",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_1_2",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_2_2",
+        "part": "block_1_2_2",
+        "anchor": "bottom",
+        "target": {
+          "part": "block_1_1_2",
+          "anchor": "top"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_2_2",
+        "part": "block_2_2_2",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_2_2",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_2_2",
+        "part": "block_3_2_2",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_2_2",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_3_2",
+        "part": "block_1_3_2",
+        "anchor": "bottom",
+        "target": {
+          "part": "block_1_2_2",
+          "anchor": "top"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_3_2",
+        "part": "block_2_3_2",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_3_2",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_3_2",
+        "part": "block_3_3_2",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_3_2",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_1_3",
+        "part": "block_1_1_3",
+        "anchor": "back",
+        "target": {
+          "part": "block_1_1_2",
+          "anchor": "front"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_1_3",
+        "part": "block_2_1_3",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_1_3",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_1_3",
+        "part": "block_3_1_3",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_1_3",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_2_3",
+        "part": "block_1_2_3",
+        "anchor": "bottom",
+        "target": {
+          "part": "block_1_1_3",
+          "anchor": "top"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_2_3",
+        "part": "block_2_2_3",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_2_3",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_2_3",
+        "part": "block_3_2_3",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_2_3",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_1_3_3",
+        "part": "block_1_3_3",
+        "anchor": "bottom",
+        "target": {
+          "part": "block_1_2_3",
+          "anchor": "top"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_2_3_3",
+        "part": "block_2_3_3",
+        "anchor": "left",
+        "target": {
+          "part": "block_1_3_3",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      },
+      {
+        "id": "connect_block_3_3_3",
+        "part": "block_3_3_3",
+        "anchor": "left",
+        "target": {
+          "part": "block_2_3_3",
+          "anchor": "right"
+        },
+        "mode": "position",
+        "offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "rotation_offset": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "offset_space": "target"
+      }
+    ]
+  }
+}
